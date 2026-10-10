@@ -277,6 +277,7 @@ set(ENGINE_SOURCES
 	neo/renderer/tr_lightrun.cpp
 	neo/renderer/tr_main.cpp
 	neo/renderer/tr_orderIndexes.cpp
+	neo/renderer/tr_pathtrace.cpp
 	neo/renderer/tr_polytope.cpp
 	neo/renderer/tr_render.cpp
 	neo/renderer/tr_rendertools.cpp

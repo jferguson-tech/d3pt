@@ -16,6 +16,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+      # The path tracer needs the Vulkan SDK to build: headers, the loader's
+      # library and the shader compiler. Only what a build needs is installed.
+      - name: Install the Vulkan SDK
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe -OutFile vulkan_sdk.exe
+          $p = Start-Process -FilePath .ulkan_sdk.exe -Wait -PassThru -ArgumentList `
+            '--root', 'C:\VulkanSDK', '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          if ($p.ExitCode -ne 0) { throw "the Vulkan SDK installer returned $($p.ExitCode)" }
+          if (-not (Test-Path C:\VulkanSDK\Bin\glslc.exe)) { throw 'glslc.exe was not installed' }
+          "VULKAN_SDK=C:\VulkanSDK" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Build
         shell: cmd
         run: build.bat RelWithDebInfo

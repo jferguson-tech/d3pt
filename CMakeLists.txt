@@ -68,7 +68,7 @@ game_dll(game-d3xp d3xp d3xp "${D3XP_SOURCES}" _D3XP CTF)
 add_executable(Doom3 WIN32 ${ENGINE_SOURCES} neo/sys/win32/rc/doom_notools.rc)
 target_compile_definitions(Doom3 PRIVATE __DOOM_DLL__)
 target_include_directories(Doom3 PRIVATE neo/sound/OggVorbis/vorbissrc)
-target_link_libraries(Doom3 PRIVATE idlib
+target_link_libraries(Doom3 PRIVATE idlib pt_rtx
 	dbghelp dinput8 dsound dxguid glu32 iphlpapi opengl32 winmm ws2_32)
 target_link_options(Doom3 PRIVATE /STACK:16777216,16777216)
 # the .pdb files go beside the binaries, where the crash handler looks for them

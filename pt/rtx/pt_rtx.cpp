@@ -851,7 +851,11 @@ void CreateShared(RtxBackend *s)
 	ghi.memory = s->shared_memory;
 	ghi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
 	HANDLE handle = nullptr;
-	Check(vkGetMemoryWin32HandleKHR(s->device, &ghi, &handle), "vkGetMemoryWin32HandleKHR");
+	// an extension's function: the loader's library has no entry for it
+	const auto get_handle = (PFN_vkGetMemoryWin32HandleKHR)vkGetDeviceProcAddr(s->device, "vkGetMemoryWin32HandleKHR");
+	if (!get_handle)
+		Throw("vkGetMemoryWin32HandleKHR is missing");
+	Check(get_handle(s->device, &ghi, &handle), "vkGetMemoryWin32HandleKHR");
 	s->shared_handle = handle;
 
 	VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -3502,7 +3506,8 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 	wait.semaphore = s->sem_acquire;
 	wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 	VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-	signal.semaphore = s->swap_drawn[index];
+	if (!s->shared)
+		signal.semaphore = s->swap_drawn[index];
 	VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
 	cbi.commandBuffer = s->cmd;
 
