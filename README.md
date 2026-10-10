@@ -1,7 +1,14 @@
 # d3pt
 
-Doom 3 with a path traced renderer. Work in progress: so far this is the
-game brought up to date, and the path tracer is not here yet.
+Doom 3 with a path traced renderer. Work in progress: the game is brought up
+to date, and the path tracer draws its first pictures.
+
+`r_pathTrace 1` draws a map's 3D view with the path tracer in `pt/`, on a
+card with ray tracing, through Vulkan. So far it shows the map and the models
+that do not deform, as they stood when the map was handed over, with their
+base textures and the map's lights as plain point lights. Nothing that moves
+is traced yet: no doors, monsters, weapon, glass or particles, and the
+lighting is far from the game's. `reloadPathTrace` hands the map over again.
 
 This is a modified version of the Doom 3 source code that id Software
 released under the GPL on November 22, 2011. It is not the original, and it
@@ -42,7 +49,7 @@ Resurrection of Evil those from `d3xp` to `run/d3xp`.
 ## Building
 
 Needs Visual Studio 2022 with the C++ desktop workload, which brings CMake
-and Ninja.
+and Ninja. It also needs the Vulkan SDK, for the path tracer.
 
     build.bat
 
@@ -59,7 +66,8 @@ Doom 3 will not start while another copy of it is running.
 
 ## License
 
-The source code is under the GNU General Public License version 3, with the
+The path tracer in `pt/` is under the MIT license, see `pt/LICENSE`. The rest
+of the source code is under the GNU General Public License version 3, with the
 additional terms id Software attached to it. Both are in
 [COPYING.txt](COPYING.txt). The game's data is not covered by it and belongs
 to its owners.

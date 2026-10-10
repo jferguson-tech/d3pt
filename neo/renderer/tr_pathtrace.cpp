@@ -62,7 +62,7 @@ idCVar r_ptSamples( "r_ptSamples", "1", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCH
 idCVar r_ptBounces( "r_ptBounces", "3", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: bounces after the first surface" );
 idCVar r_ptExposure( "r_ptExposure", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: exposure" );
 idCVar r_ptAutoExposure( "r_ptAutoExposure", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: adapt the exposure to the scene" );
-idCVar r_ptLightScale( "r_ptLightScale", "0.4", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright a light is for its colour and size; needs reloadPathTrace" );
+idCVar r_ptLightScale( "r_ptLightScale", "2", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright a light is for its colour and size; needs reloadPathTrace" );
 idCVar r_ptDenoise( "r_ptDenoise", "4", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: passes of the spatial filter, 0-4" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
 

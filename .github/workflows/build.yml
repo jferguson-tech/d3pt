@@ -23,7 +23,7 @@ jobs:
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe -OutFile vulkan_sdk.exe
-          $p = Start-Process -FilePath .ulkan_sdk.exe -Wait -PassThru -ArgumentList `
+          $p = Start-Process -FilePath .\vulkan_sdk.exe -Wait -PassThru -ArgumentList `
             '--root', 'C:\VulkanSDK', '--accept-licenses', '--default-answer', '--confirm-command', 'install'
           if ($p.ExitCode -ne 0) { throw "the Vulkan SDK installer returned $($p.ExitCode)" }
           if (-not (Test-Path C:\VulkanSDK\Bin\glslc.exe)) { throw 'glslc.exe was not installed' }
