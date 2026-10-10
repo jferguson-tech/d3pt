@@ -75,6 +75,16 @@ vertices appear counter clockwise.
 									   and lit as anything else is. For a lamp's own
 									   housing, where the lamp is given as a point
 									   inside it */
+#define PT_MAT_REFRACT			16384u	/* a pane of glass (alpha under 1, smooth) that
+									   bends what is seen through it, with pt_view_t's
+									   refraction: the view is bent going in, by the
+									   face as its normal map tilts it, and back again
+									   coming out of the pane's far face, which is
+									   looked for behind it and failing that taken to
+									   be 2 units in. What is behind shows shifted,
+									   more the thicker the pane and the more it is
+									   seen from the side, and wavers where the glass
+									   is uneven. RTX backend only */
 #define PT_MAT_EMIT_MAPPED		4096u	/* emission_texture says where on the surface the
 									   material's light comes from, and stands for
 									   texture in all that is said of emission: a

@@ -57,7 +57,11 @@ file is what stands between the two:
   its bumps and the colour it shines in, and the tracer is given the same
   three. See PT_ReadMaterial.
 
-What is not there yet: translucent surfaces, particles, surfaces the game
+  glass: of all that the game draws see-through, glass alone is traced: a
+  clear pane with a faint tint, which reflects, and bends what is seen
+  through it. See PT_IsGlass.
+
+What is not there yet: other translucent surfaces, particles, surfaces the game
 bends as it draws them, and all that the lights' own pictures do.
 
 */
@@ -91,6 +95,9 @@ idCVar r_ptSky( "r_ptSky", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "pa
 idCVar r_ptTonemap( "r_ptTonemap", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: how light is turned into a picture: 0 filmic, 1 neutral, 2 clipped as the game clips it" );
 idCVar r_ptContrast( "r_ptContrast", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: contrast of the picture, 1 = unchanged" );
 idCVar r_ptSaturation( "r_ptSaturation", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: saturation of the picture, 1 = unchanged" );
+idCVar r_ptGlass( "r_ptGlass", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: trace glass; needs reloadPathTrace" );
+idCVar r_ptGlassTint( "r_ptGlassTint", "0.08", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much of what is behind a pane of glass its own colour covers, 0 to 1; needs reloadPathTrace" );
+idCVar r_ptRefraction( "r_ptRefraction", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: glass bends what is seen through it" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
 
 // OpenGL's side of opening the tracer's picture (GL_EXT_memory_object, GL_EXT_memory_object_win32)
@@ -312,6 +319,36 @@ static bool PT_Start( void ) {
 
 /*
 ================
+PT_IsGlass
+
+The game draws many things see-through: glass, but also decals, smoke,
+glows and flares, each by blending some picture over what is behind in a
+way of its own. Only glass is something a path tracer has a thing for. A
+material says it is glass for the sake of the sound and the marks a bullet
+makes on it, and that is what is gone by, or failing that its name.
+================
+*/
+static bool PT_IsGlass( const idMaterial *shader ) {
+	if ( !r_ptGlass.GetBool() || shader->Coverage() != MC_TRANSLUCENT || shader->Deform() != DFRM_NONE ) {
+		return false;
+	}
+	return shader->GetSurfaceType() == SURFTYPE_GLASS || idStr::FindText( shader->GetName(), "glass", false ) >= 0;
+}
+
+/*
+================
+PT_IsTraced
+================
+*/
+static bool PT_IsTraced( const idMaterial *shader ) {
+	if ( !shader || !shader->IsDrawn() ) {
+		return false;
+	}
+	return shader->Coverage() != MC_TRANSLUCENT || PT_IsGlass( shader );
+}
+
+/*
+================
 PT_SkyOf
 
 The six pictures a material shows the sky by, if that is what it does: the
@@ -395,6 +432,7 @@ typedef struct {
 	bool	glows;			// it is shown unlit
 	const idImage *sky;		// it shows the sky: the six pictures of it, and nothing else is read
 	bool	holes;			// base's alpha cuts it out
+	bool	glass;			// a clear pane: base is its tint
 } ptRead_t;
 
 /*
@@ -457,6 +495,9 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 		if ( !stage->texture.image || stage->texture.cinematic || stage->texture.dynamic != DI_STATIC ) {
 			continue;
 		}
+		if ( stage->texture.texgen != TG_EXPLICIT ) {
+			continue;		// what a surface mirrors, as the game fakes it: the tracer has the real thing
+		}
 		if ( stage->lighting == SL_DIFFUSE && !diffuse ) {
 			diffuse = stage;
 		} else if ( stage->lighting == SL_AMBIENT && !unlit ) {
@@ -468,19 +509,20 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 		}
 	}
 	const shaderStage_t *shown = diffuse ? diffuse : unlit;
-	read.glows = !diffuse && unlit;
-	read.holes = shown && shown->hasAlphaTest;
+	read.glass = PT_IsGlass( shader );
+	read.glows = !diffuse && unlit && !read.glass;
+	read.holes = shown && shown->hasAlphaTest && !read.glass;
 	if ( !pictures ) {
 		return;		// only what it is, for one whose pictures the tracer has
 	}
 	if ( shown ) {
 		read.base = PT_ReadImage( shown->texture.image, read.baseWidth, read.baseHeight );
 	}
-	if ( !diffuse || !r_ptMaterials.GetBool() ) {
+	if ( ( !diffuse && !read.glass ) || !r_ptMaterials.GetBool() ) {
 		return;
 	}
 
-	if ( specular ) {
+	if ( specular && !read.glass ) {
 		read.shine = PT_ReadImage( specular->texture.image, read.shineWidth, read.shineHeight );
 	}
 	if ( read.shine ) {
@@ -506,7 +548,8 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 		}
 	}
 	if ( read.detail ) {
-		const byte rough = (byte) ( idMath::ClampFloat( 0.05f, 1.0f, read.shine ? r_ptGloss.GetFloat() : 0.85f ) * 255.0f + 0.5f );
+		// (glass is as smooth as the tracer has anything)
+		const byte rough = (byte) ( idMath::ClampFloat( 0.05f, 1.0f, read.glass ? 0.05f : ( read.shine ? r_ptGloss.GetFloat() : 0.85f ) ) * 255.0f + 0.5f );
 		const int count = read.detailWidth * read.detailHeight;
 		for ( i = 0; i < count; i++ ) {
 			read.detail[i * 4 + 3] = rough;
@@ -542,6 +585,11 @@ static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int 
 	material.alpha = 1.0f;
 	material.roughness = 0.85f;
 	material.flags = flags;
+	if ( read.glass ) {
+		material.alpha = idMath::ClampFloat( 0.0f, 0.95f, r_ptGlassTint.GetFloat() );
+		material.roughness = 0.05f;
+		material.flags |= PT_MAT_REFRACT;
+	}
 	if ( read.holes ) {
 		material.flags |= PT_MAT_ALPHA_TEST;
 	}
@@ -568,7 +616,7 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool
 	ptRead_t		read;
 	pt_material_t	material;
 
-	if ( !shader || !shader->IsDrawn() || shader->Coverage() == MC_TRANSLUCENT ) {
+	if ( !PT_IsTraced( shader ) ) {
 		return -1;
 	}
 	// The game's lamps sit inside their fittings, which it tells not to cast
@@ -664,12 +712,20 @@ static void PT_AddModel( ptWorldBuild_t &build, const idRenderEntityLocal *def )
 			build.uvs.Append( tri->verts[j].st.x );
 			build.uvs.Append( tri->verts[j].st.y );
 		}
+		const bool twoSided = shader->GetCullType() == CT_TWO_SIDED;
 		for ( j = 0; j + 2 < tri->numIndexes; j += 3 ) {
 			// the engine's triangles face the other way round from the tracer's
 			build.indices.Append( first + tri->indexes[j + 2] );
 			build.indices.Append( first + tri->indexes[j + 1] );
 			build.indices.Append( first + tri->indexes[j] );
 			build.triMaterials.Append( material );
+			if ( twoSided ) {
+				// a ray meets a triangle from its front only: one seen from both sides is there twice
+				build.indices.Append( first + tri->indexes[j] );
+				build.indices.Append( first + tri->indexes[j + 1] );
+				build.indices.Append( first + tri->indexes[j + 2] );
+				build.triMaterials.Append( material );
+			}
 		}
 	}
 }
@@ -1011,7 +1067,7 @@ material when the view is drawn.
 static int PT_MovingFor( const idMaterial *shader, unsigned int flags ) {
 	int i;
 
-	if ( !shader || !shader->IsDrawn() || shader->Coverage() == MC_TRANSLUCENT || shader->Deform() != DFRM_NONE ) {
+	if ( !PT_IsTraced( shader ) || shader->Deform() != DFRM_NONE ) {
 		return -1;
 	}
 	if ( !shader->SurfaceCastsShadow() ) {
@@ -1186,7 +1242,9 @@ void PT_GatherView( void ) {
 				R_DeriveTangents( tri );		// a posed model's normals are worked out when they are first wanted
 			}
 
-			const int numTris = tri->numIndexes / 3;
+			// a ray meets a triangle from its front only: one seen from both sides is there twice
+			const int sides = shader->GetCullType() == CT_TWO_SIDED ? 2 : 1;
+			const int numTris = ( tri->numIndexes / 3 ) * sides;
 			int at = pt.triMaterials.Num();
 			PT_Grow( pt.triMaterials, at + numTris );
 			PT_Grow( pt.positions, ( at + numTris ) * 9 );
@@ -1197,10 +1255,12 @@ void PT_GatherView( void ) {
 
 				pt.triMaterials[at] = material;
 				// the engine's triangles face the other way round from the tracer's
+				const int	of = k / sides;
+				const bool	back = ( k % sides ) != 0;
 				for ( int c = 0; c < 3; c++ ) {
-					const idDrawVert	&v = tri->verts[ tri->indexes[k * 3 + 2 - c] ];
+					const idDrawVert	&v = tri->verts[ tri->indexes[of * 3 + ( back ? c : 2 - c )] ];
 					const idVec3		xyz = origin + v.xyz * axis;
-					const idVec3		normal = v.normal * axis;
+					const idVec3		normal = ( back ? -v.normal : v.normal ) * axis;
 
 					p[c * 3] = xyz.x;		p[c * 3 + 1] = xyz.y;		p[c * 3 + 2] = xyz.z;
 					n[c * 3] = normal.x;	n[c * 3 + 1] = normal.y;	n[c * 3 + 2] = normal.z;
@@ -1387,6 +1447,7 @@ bool PT_DrawView( void ) {
 	view.filter = 2;
 	view.view_mode = r_ptView.GetInteger();
 	view.reflections = 2;
+	view.refraction = r_ptRefraction.GetBool();
 	view.shadow_faces = r_ptShadowFaces.GetBool();
 	view.reflection_rate = 1.0f;
 	view.light_samples = r_ptLightSamples.GetInteger();
