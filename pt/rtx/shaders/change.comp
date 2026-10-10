@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Jonathan Ferguson
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+// Finds where the light has changed since the frames gathered so far, so
+// that what was gathered can be let go there and does not trail behind a
+// light that moves, flashes or goes out.
+//
+// One pixel's sample says little: it is noise. So the picture is taken in
+// blocks of 8 by 8. In each, this frame's samples are added up, and so is
+// what was gathered for the same points; if nothing has changed the two sums
+// agree to within what the spread of the samples allows. Where they are
+// further apart than that, by a good margin, the light is not what it was.
+//
+// In two steps: the first adds up each block, the second compares, both
+// block by block and over each block with the eight around it, which finds
+// fainter changes that cover more of the picture.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "scene.glsl"
+
+layout(push_constant) uniform Pass
+{
+	int		step;		// 0: add up; 1: compare
+	int		unused[3];
+} pass;
+
+const int kBlock = 8;
+
+// Where was point p on screen last frame, less this frame's offset within
+// the pixel; as in temporal.comp
+bool WasAt(vec3 p, out vec2 at)
+{
+	at = vec2(0.0);
+	const vec3 v = p - fr.prev_origin.xyz;
+	const float z = dot(v, fr.prev_forward.xyz);
+	if (z <= 0.01)
+		return false;
+	at = vec2((dot(v, fr.prev_right.xyz) / (z * fr.prev_origin.w) * 0.5 + 0.5) * fr.size.x - 0.5 - fr.right.w,
+		(0.5 - dot(v, fr.prev_up.xyz) / (z * fr.prev_forward.w) * 0.5) * fr.size.y - 0.5 - fr.up.w);
+	return true;
+}
+
+// each pixel of a block's share of its sums, for the first of them to add up
+shared vec4 part[3][kBlock * kBlock];
+
+// One pixel's share. Per channel: this frame's sample, what was gathered,
+// how much the samples there have varied from frame to frame, 1 for a
+// pixel that counts.
+void Share(ivec2 pixel, out vec4 share[3])
+{
+	share = vec4[3](vec4(0.0), vec4(0.0), vec4(0.0));
+	const ivec2 size = fr.size.xy;
+	const int now = fr.frame_has.z, prev = 1 - now;
+	if (pixel.x >= size.x || pixel.y >= size.y)
+		return;
+	const vec4 surface = imageLoad(img_surface[now], pixel);
+	if (surface.a < 0.0)
+		return;
+	const vec4 seen = imageLoad(img_seen, pixel);
+	vec2 f;
+	if (!WasAt(seen.xyz, f))
+		return;
+	const ivec2 q = ivec2(floor(f + 0.5));
+	if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+		return;
+	const vec4 was = imageLoad(img_surface[prev], q);
+	const float expected = length(seen.xyz - fr.prev_origin.xyz);
+	if (was.a < 0.0 || dot(was.xyz, surface.xyz) < 0.8 || abs(was.a - expected) > 0.1 * expected)
+		return;
+	// What has only a few frames behind it is as noisy as the samples and
+	// is on its way already: it would only be let go over and over.
+	if (imageLoad(img_kept[prev * 3], q).a < 4.0)
+		return;
+
+	for (int k = 0; k < 3; k++)
+	{
+		// a sharp reflection, and what a layer in front reflects, are
+		// followed elsewhere than where the surface was
+		if (k == 1 && seen.a < 0.5)
+			continue;
+		if (k == 2 && imageLoad(img_over, pixel).w != 0.0)
+			continue;
+		const float n = Luminance(imageLoad(img_noisy[k], pixel).rgb);
+		// The mean gathered is what was there. The spread is taken from
+		// the frames gathered too, and not from this frame's samples: most
+		// of it is in a few very bright ones, and a block that happens to
+		// have none this frame would take itself for quiet and its past
+		// for wrong.
+		const vec2 m = imageLoad(img_moments[prev * 3 + k], q).xy;
+		share[k] = vec4(n, m.x, max(m.y - m.x * m.x, 0.0), 1.0);
+	}
+}
+
+// How many times further apart the two sums are than chance allows
+float Apart(vec4 sum)
+{
+	if (sum.w < 12.0)
+		return 0.0;
+	const float inv = 1.0 / sum.w;
+	const float now = sum.x * inv, was = sum.y * inv;
+	const float diff = abs(now - was);
+	// a change too small to see is none
+	if (diff <= 0.1 * max(now, was) + 1.0e-3)
+		return 0.0;
+	// The mean of so many samples is uncertain by their spread over the
+	// root of their number; what was gathered, from at least 4 frames of
+	// the like, by half of that at most.
+	return diff / sqrt(sum.z * inv * inv * 1.25 + 1.0e-8);
+}
+
+void Compare(ivec2 block)
+{
+	const ivec2 blocks = (fr.size.xy + kBlock - 1) / kBlock;
+	float alone = 0.0, wide = 0.0;
+	for (int k = 0; k < 3; k++)
+	{
+		vec4 around = vec4(0.0);
+		for (int dy = -1; dy <= 1; dy++)
+		{
+			for (int dx = -1; dx <= 1; dx++)
+			{
+				const ivec2 b = block + ivec2(dx, dy);
+				if (b.x < 0 || b.y < 0 || b.x >= blocks.x || b.y >= blocks.y)
+					continue;
+				const vec4 sum = imageLoad(img_change[k], b);
+				around += sum;
+				if (dx == 0 && dy == 0)
+					alone = max(alone, Apart(sum));
+			}
+		}
+		wide = max(wide, Apart(around));
+	}
+	// Chance alone puts a block three spreads out now and then, and the
+	// spread of this kind of light is itself unsure: only well beyond that
+	// is the light taken to have changed, and further beyond for a block
+	// by itself than for nine that agree.
+	imageStore(img_change[3], block,
+		vec4(max(smoothstep(4.5, 9.0, alone), smoothstep(3.0, 6.0, wide)), max(alone, wide), 0.0, 0.0));
+}
+
+void main()
+{
+	const ivec2 blocks = (fr.size.xy + kBlock - 1) / kBlock;
+	if (pass.step == 0)
+	{
+		// a group of threads to a block, one to a pixel
+		vec4 share[3];
+		Share(ivec2(gl_GlobalInvocationID.xy), share);
+		for (int k = 0; k < 3; k++)
+			part[k][gl_LocalInvocationIndex] = share[k];
+		barrier();
+		if (gl_LocalInvocationIndex != 0u)
+			return;
+		for (int k = 0; k < 3; k++)
+		{
+			vec4 sum = vec4(0.0);
+			for (int i = 0; i < kBlock * kBlock; i++)
+				sum += part[k][i];
+			imageStore(img_change[k], ivec2(gl_WorkGroupID.xy), sum);
+		}
+		return;
+	}
+	// a thread to a block
+	const ivec2 block = ivec2(gl_GlobalInvocationID.xy);
+	if (block.x < blocks.x && block.y < blocks.y)
+		Compare(block);
+}

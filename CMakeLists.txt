@@ -10,6 +10,31 @@ include(sources.cmake)
 set(RUN_DIR ${CMAKE_SOURCE_DIR}/run)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# The path tracer (pt/, MIT, engine independent). It is declared here, before
+# the options the 2004 code needs, so that it is built without them. It needs
+# the Vulkan SDK: headers, the loader's library and glslc.
+find_package(Vulkan REQUIRED COMPONENTS glslc)
+set(PT_SHADER_DIR ${CMAKE_BINARY_DIR}/pt_shaders)
+file(MAKE_DIRECTORY ${PT_SHADER_DIR})
+set(PT_SHADER_INC)
+foreach(shader blit.vert blit.frag trace.comp temporal.comp change.comp atrous.comp compose.comp
+		bloom.comp grade.comp resolve.comp)
+	add_custom_command(
+		OUTPUT ${PT_SHADER_DIR}/${shader}.inc
+		COMMAND Vulkan::glslc -mfmt=c --target-env=vulkan1.3 -O
+			${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader} -o ${PT_SHADER_DIR}/${shader}.inc
+		DEPENDS ${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader} ${CMAKE_SOURCE_DIR}/pt/rtx/shaders/scene.glsl
+		VERBATIM)
+	list(APPEND PT_SHADER_INC ${PT_SHADER_DIR}/${shader}.inc)
+endforeach()
+add_library(pt_rtx STATIC pt/rtx/pt_rtx.cpp pt/cpu/pt_world.cpp pt/cpu/pt_bvh.cpp ${PT_SHADER_INC})
+target_include_directories(pt_rtx PRIVATE ${PT_SHADER_DIR})
+target_include_directories(pt_rtx PUBLIC pt/include)
+target_link_libraries(pt_rtx PUBLIC Vulkan::Vulkan)
+target_compile_features(pt_rtx PUBLIC cxx_std_17)
+# the tracer is all small inlined functions; RelWithDebInfo would otherwise hold inlining back
+target_compile_options(pt_rtx PRIVATE /Ob2 /Oi /Ot /EHsc)
+
 # the code is C++ of 2004: let it through as it is, and say nothing of its style
 add_compile_options(/permissive /Zc:strictStrings- /W1 /GR /EHsc /fp:fast /MP)
 # a pointer put through a 32-bit integer is an error, not a warning

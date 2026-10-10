@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Jonathan Ferguson
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+// The last step, and the only one that works at the size of the view: it
+// builds the full size picture from the smaller one that was traced.
+//
+// Each frame is traced through a different point of every pixel, so over a
+// few frames the traced samples land all across each pixel of the smaller
+// picture, which is to say on many different pixels of the full size one.
+// Every full size pixel keeps a running average of the samples that fell
+// near it, each counted by how near. What it has from before is found where
+// that point of the scene was on screen last frame, and held to the range of
+// what is around it now, so that nothing lingers where it no longer belongs.
+// The same averaging smooths edges when nothing is being enlarged.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "scene.glsl"
+
+vec3 Graded(ivec2 q)
+{
+	return imageLoad(img_graded, clamp(q, ivec2(0), fr.size.xy - 1)).rgb;
+}
+
+// the traced picture between its four nearest samples
+vec3 Between(vec2 at)
+{
+	const ivec2 p0 = ivec2(floor(at));
+	const vec2 a = at - vec2(p0);
+	return mix(mix(Graded(p0), Graded(p0 + ivec2(1, 0)), a.x),
+		mix(Graded(p0 + ivec2(0, 1)), Graded(p0 + ivec2(1, 1)), a.x), a.y);
+}
+
+void main()
+{
+	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	const ivec2 out_size = fr.out_size.xy;
+	if (pixel.x >= out_size.x || pixel.y >= out_size.y)
+		return;
+	const ivec2 size = fr.size.xy;
+	const int now = fr.frame_has.z, prev = 1 - now;
+	const vec2 grow = vec2(out_size) / vec2(size);
+
+	// where this pixel lies among the traced samples: sample i was taken at
+	// i + 0.5 + this frame's offset, in traced pixels
+	const vec2 uv = (vec2(pixel) + 0.5) / vec2(out_size);
+	const vec2 jitter = vec2(fr.right.w, fr.up.w);
+	const vec2 at = uv * vec2(size) - 0.5 - jitter;
+	const ivec2 nearest = clamp(ivec2(floor(at + 0.5)), ivec2(0), size - 1);
+
+	if (fr.frame_has.w == 0)
+	{
+		// no averaging over frames: the traced picture, enlarged smoothly
+		const vec3 c = Between(uv * vec2(size) - 0.5);
+		imageStore(img_steady[now], pixel, vec4(c, 0.0));
+		imageStore(img_picture, pixel, vec4(pow(c, vec3(1.0 / 2.2)), 1.0));
+		return;
+	}
+
+	// this frame's sample, and how much it has to say about this pixel: all
+	// if it fell on it, little if it fell a full size pixel away
+	const vec3 sample_now = Graded(nearest);
+	const vec2 off = (at - vec2(nearest)) * grow;
+	const float weight = exp(-dot(off, off) * 2.3);
+
+	vec3 c = sample_now;
+	float count = weight;
+	bool fresh = true;
+
+	if (fr.output_i.w != 0)
+	{
+		// where was this point on screen last frame?
+		const vec3 v = imageLoad(img_seen, nearest).xyz - fr.prev_origin.xyz;
+		const float z = dot(v, fr.prev_forward.xyz);
+		// that is where the sample was; this pixel is a little to one side
+		// of the sample, and was last frame too
+		const vec2 f = vec2((dot(v, fr.prev_right.xyz) / (z * fr.prev_origin.w) * 0.5 + 0.5) * out_size.x,
+			(0.5 - dot(v, fr.prev_up.xyz) / (z * fr.prev_forward.w) * 0.5) * out_size.y) - 0.5 + off;
+		bool there = z > 0.01 && f.x > -0.5 && f.y > -0.5 && f.x < float(out_size.x) - 0.5 && f.y < float(out_size.y) - 0.5;
+
+		// Was it this point that was seen there, or something in front of
+		// it? Where the gun or a door has just moved aside, what the picture
+		// held was the gun or the door: nothing to do with what shows now.
+		// The traced picture of last frame knows how far off what it showed
+		// was, to within a traced pixel of where.
+		if (there && imageLoad(img_surface[now], nearest).a >= 0.0)
+		{
+			const float expected = length(v);
+			const ivec2 spot = ivec2(floor((f + 0.5) / grow));
+			there = false;
+			for (int dy = -1; dy <= 1 && !there; dy++)
+			{
+				for (int dx = -1; dx <= 1; dx++)
+				{
+					const ivec2 q = spot + ivec2(dx, dy);
+					if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+						continue;
+					const float far = imageLoad(img_surface[prev], q).a;
+					if (far >= 0.0 && abs(far - expected) <= 0.1 * expected)
+					{
+						there = true;
+						break;
+					}
+				}
+			}
+		}
+
+		if (there)
+		{
+			const ivec2 p0 = clamp(ivec2(floor(f)), ivec2(0), out_size - 1);
+			const ivec2 p1 = min(p0 + 1, out_size - 1);
+			const vec2 a = clamp(f - vec2(p0), 0.0, 1.0);
+			vec4 was = mix(mix(imageLoad(img_steady[prev], p0), imageLoad(img_steady[prev], ivec2(p1.x, p0.y)), a.x),
+				mix(imageLoad(img_steady[prev], ivec2(p0.x, p1.y)), imageLoad(img_steady[prev], p1), a.x), a.y);
+
+			// what was there counts only as far as it could be this point
+			// now: no brighter or darker than the samples around it
+			vec3 lo = sample_now, hi = sample_now;
+			for (int dy = -1; dy <= 1; dy++)
+			{
+				for (int dx = -1; dx <= 1; dx++)
+				{
+					if (dx == 0 && dy == 0)
+						continue;
+					const vec3 n = Graded(nearest + ivec2(dx, dy));
+					lo = min(lo, n);
+					hi = max(hi, n);
+				}
+			}
+			const vec3 held = clamp(was.rgb, lo, hi);
+			// what had to be pulled far into range was something else: let
+			// it go sooner
+			const float changed = Luminance(abs(held - was.rgb));
+			was.a *= 1.0 - clamp(changed * 8.0, 0.0, 0.75);
+
+			// at rest the average may run on; on the move it has to keep up
+			const float most = fr.output_f.w != 0.0 ? 256.0 : 10.0;
+			const float before = min(was.a, most);
+			count = before + weight;
+			fresh = false;
+			c = (held * before + sample_now * weight) / max(count, 1.0e-4);
+		}
+	}
+
+	// a pixel no sample has come near yet shows the traced picture enlarged,
+	// and so does all of a part of the picture that has only now come into
+	// view: there some pixels have a sample and some not, which would show
+	// as a pattern of dots
+	if (fresh)
+		c = Between(uv * vec2(size) - 0.5);
+	else if (count < 0.5)
+		c = mix(Between(uv * vec2(size) - 0.5), c, count * 2.0);
+
+	imageStore(img_steady[now], pixel, vec4(c, count));
+	imageStore(img_picture, pixel, vec4(pow(c, vec3(1.0 / 2.2)), 1.0));
+}

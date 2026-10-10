@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Jonathan Ferguson
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+// One pass of the spatial filter: each pixel's light is averaged with that
+// of pixels around it that show the same surface and are lit alike. Run a
+// few times with the taps spread twice as far each time ("a trous"), it
+// reaches a long way for the cost of a small one. How readily neighbours are
+// let in depends on how noisy the pixel is measured to be: a brightness
+// difference within a few times the noise is taken for noise and smoothed,
+// a larger one for a real edge and kept. A pixel whose noise has settled is
+// left as it is. The noise is carried along through the passes, each one
+// working out what is left of it after its averaging.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "scene.glsl"
+
+layout(push_constant) uniform Pass
+{
+	int		source;		// 0: what was gathered over time; 1, 2: the filter's own two sets
+	int		target;		// 0, 1: which of the filter's sets to write
+	int		spread;		// pixels between taps
+	int		unused;
+} pass;
+
+// a channel's light at q, and the variance of it
+vec4 Load(int k, ivec2 q, out float variance)
+{
+	if (pass.source == 0)
+	{
+		const vec4 kept = imageLoad(img_kept[fr.frame_has.z * 3 + k], q);
+		variance = GatheredVariance(k, q, kept.a);
+		return kept;
+	}
+	const vec4 l = imageLoad(img_filter[(pass.source - 1) * 3 + k], q);
+	variance = l.a * l.a;
+	return l;
+}
+
+void main()
+{
+	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	const ivec2 size = fr.size.xy;
+	if (pixel.x >= size.x || pixel.y >= size.y)
+		return;
+	const int now = fr.frame_has.z;
+
+	const vec4 surface = imageLoad(img_surface[now], pixel);
+	vec3 centre[3];
+	float lum[3], variance[3];
+	// settled already: nothing to gain from blurring it
+	bool settled = surface.a >= 0.0;
+	for (int k = 0; k < 3; k++)
+	{
+		centre[k] = Load(k, pixel, variance[k]).rgb;
+		lum[k] = Luminance(centre[k]);
+		settled = settled && sqrt(variance[k]) <= 0.01 * lum[k] + 1.0e-4;
+	}
+	if (surface.a < 0.0 || settled)
+	{
+		for (int k = 0; k < 3; k++)
+			imageStore(img_filter[pass.target * 3 + k], pixel, vec4(centre[k], sqrt(variance[k])));
+		return;
+	}
+
+	// How big a brightness difference is still taken for noise, per channel:
+	// so many times the noise measured. A sharp reflection is a picture in
+	// itself and must not be smeared; so is what the layers in front
+	// reflect, where there are any, while the glow of the air alone, which
+	// is all the channel holds elsewhere, can take a lot of smoothing.
+	const float roughness = imageLoad(img_albedo[1], pixel).a;
+	const bool layers = imageLoad(img_over, pixel).w != 0.0;
+	float inv_tolerance[3];
+	inv_tolerance[0] = 1.0 / (4.0 * sqrt(variance[0]) + 1.0e-3);
+	inv_tolerance[1] = 1.0 / ((1.0 + 3.0 * roughness) * sqrt(variance[1]) + 1.0e-3);
+	inv_tolerance[2] = 1.0 / ((layers ? 0.75 : 6.0) * sqrt(variance[2]) + 1.0e-3);
+
+	const float kernel[3] = float[3](3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
+	vec3 sum[3] = vec3[3](vec3(0.0), vec3(0.0), vec3(0.0));
+	float wsum[3] = float[3](0.0, 0.0, 0.0), vsum[3] = float[3](0.0, 0.0, 0.0);
+
+	for (int dy = -2; dy <= 2; dy++)
+	{
+		for (int dx = -2; dx <= 2; dx++)
+		{
+			const ivec2 q = pixel + ivec2(dx, dy) * pass.spread;
+			if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+				continue;
+			const vec4 other = imageLoad(img_surface[now], q);
+			if (other.a < 0.0)
+				continue;
+
+			float w = kernel[abs(dx)] * kernel[abs(dy)];
+			// the same way up, and about as far off
+			const float facing = max(dot(surface.xyz, other.xyz), 0.0);
+			w *= facing * facing;
+			w *= facing * facing;
+			w *= facing * facing;
+			w *= facing * facing;
+			w *= exp(-abs(other.a - surface.a) / (0.03 * surface.a + 0.5));
+			if (w <= 1.0e-5)
+				continue;
+			// a reflection in a surface as smooth is a different picture
+			const float wr = abs(imageLoad(img_albedo[1], q).a - roughness) * 8.0;
+
+			for (int k = 0; k < 3; k++)
+			{
+				float v;
+				const vec3 c = Load(k, q, v).rgb;
+				const float wk = w * exp(-(abs(Luminance(c) - lum[k]) * inv_tolerance[k] + (k == 1 ? wr : 0.0)));
+				sum[k] += c * wk;
+				vsum[k] += v * wk * wk;
+				wsum[k] += wk;
+			}
+		}
+	}
+
+	for (int k = 0; k < 3; k++)
+	{
+		if (wsum[k] <= 0.0)
+			imageStore(img_filter[pass.target * 3 + k], pixel, vec4(centre[k], sqrt(variance[k])));
+		else
+			imageStore(img_filter[pass.target * 3 + k], pixel, vec4(sum[k] / wsum[k], sqrt(vsum[k]) / wsum[k]));
+	}
+}

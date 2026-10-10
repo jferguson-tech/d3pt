@@ -1,0 +1,606 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Jonathan Ferguson
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+// Traces one pixel: what the eye sees there, and samples of the light on it.
+// Follows TracePixel in the CPU backend. What it writes is noisy; the passes
+// after it gather it over time and filter it.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#define TRACING
+#include "scene.glsl"
+
+const float GLASS_INDEX = 1.5;
+const int MAX_LAYERS = 8;	// see-through surfaces looked through before the next counts as solid
+
+// Light meeting the boundary between two clear materials: how much is
+// reflected, and the cosine of the angle the rest leaves at. eta is the
+// refractive index on the side the light comes from over that on the other.
+// Returns 1 when nothing gets through (total internal reflection).
+float Dielectric(float cosi, float eta, out float cost)
+{
+	const float sin2t = eta * eta * (1.0 - cosi * cosi);
+	if (sin2t >= 1.0)
+	{
+		cost = 0.0;
+		return 1.0;
+	}
+	cost = sqrt(1.0 - sin2t);
+	const float rs = (eta * cosi - cost) / (eta * cosi + cost);
+	const float rp = (cosi - eta * cost) / (cosi + eta * cost);
+	return 0.5 * (rs * rs + rp * rp);
+}
+
+// what is left of light after a distance through something that absorbs it
+vec3 Fade(vec3 absorb, float distance)
+{
+	if (distance <= 0.0 || MaxComponent(absorb) <= 0.0)
+		return vec3(1.0);
+	return exp(-absorb * distance);
+}
+
+// the direction from an eye with these axes through a point of the picture
+vec3 EyeDir(vec3 forward, vec3 right, vec3 up, vec2 at)
+{
+	return normalize(forward
+		+ right * ((2.0 * at.x / fr.size.x - 1.0) * fr.origin.w)
+		+ up * ((1.0 - 2.0 * at.y / fr.size.y) * fr.forward.w));
+}
+
+// The light the air scatters to the eye from the first reach of a view ray:
+// the reach is cut into as many lengths as there are samples, and a point
+// drawn in each. And, with a shaft_weight, the light a liquid on the way
+// scatters at shaft_at, which counts for that much: here, so that there is
+// one place where light on a point in the air is worked out and not two.
+vec3 FogGlow(vec3 from, vec3 dir, float reach, float fog, float max_sample, vec3 shaft_at, vec3 shaft_weight)
+{
+	const int count = fog > 0.0 ? max(1, int(fr.painted.z)) : 0;
+	const int points = count + (MaxComponent(shaft_weight) > 0.0 ? 1 : 0);
+	vec3 sum = vec3(0.0), shaft = vec3(0.0);
+	for (int k = 0; k < points; k++)
+	{
+		const float at = (float(k) + Rand()) * reach / float(max(count, 1));
+		const vec3 lit = DirectMedium(k < count ? from + dir * at : shaft_at);
+		if (k < count)
+			sum += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample);
+		else
+			shaft = ClampSample(lit * shaft_weight, max_sample);
+	}
+	return sum / float(max(count, 1)) + shaft;
+}
+
+// the export planes where the view meets no surface
+void ExportNone(ivec2 pixel)
+{
+	if (fr.size.w == 0)
+		return;
+	imageStore(img_export[0], pixel, vec4(0.0));
+	imageStore(img_export[1], pixel, vec4(-1.0, -1.0, 0.0, 0.0));
+	imageStore(img_export[2], pixel, vec4(0.0));
+	imageStore(img_export[3], pixel, vec4(0.0));
+}
+
+void main()
+{
+	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	const ivec2 size = fr.size.xy;
+	if (pixel.x >= size.x || pixel.y >= size.y)
+		return;
+	const int now = fr.frame_has.z;
+	rng_state = Hash(uint(pixel.y * size.x + pixel.x), uint(fr.counts.z));
+
+	// the eye as the shutter closes, and, with motion blur, where it was at
+	// a moment of this pixel's own before that: between the shutter opening
+	// and closing in a straight line, the axes squared up again afterwards
+	const vec2 at = vec2(pixel) + 0.5 + vec2(fr.right.w, fr.up.w);
+	const vec3 frame_dir = EyeDir(fr.forward.xyz, fr.right.xyz, fr.up.xyz, at);
+	vec3 eye = fr.origin.xyz, eye_dir = frame_dir;
+	const bool blur = fr.open_origin.w != 0.0;
+	if (blur)
+	{
+		const float t = Rand();
+		eye = mix(fr.open_origin.xyz, fr.origin.xyz, t);
+		const vec3 forward = normalize(mix(fr.open_forward.xyz, fr.forward.xyz, t));
+		vec3 right = mix(fr.open_right.xyz, fr.right.xyz, t);
+		right = normalize(right - forward * dot(right, forward));
+		eye_dir = EyeDir(forward, right, cross(right, forward), at);
+	}
+
+	// What the eye carries, the weapon in hand, turns with it: it is seen
+	// along the unblurred ray, from the eye at the end of the frame, and the
+	// blurred ray passes through where it is.
+	const bool held_apart = blur && fr.held.y > 0;
+	bool have_held = false;
+	Hit held_hit;
+	Material held_mat;
+	if (held_apart)
+	{
+		float held_tmin = 0.0;
+		have_held = Closest(fr.origin.xyz, frame_dir, held_tmin, true, false, MASK_HELD, false, held_hit, held_mat);
+	}
+
+	const float max_sample = fr.settings_f.x;
+	const float fog = fr.settings_f.w;
+	const int reflections = fr.settings.z;
+
+	// Walk through whatever is see-through to the first solid surface. The
+	// solid surface is what the filters work on; the layers in front dim it
+	// and add their own light on top.
+	vec3 origin = eye, dir = eye_dir;
+	float tmin = 0.0;
+	float through = 1.0;		// how much of what is behind still shows
+	vec3 tint = vec3(1.0);		// what liquid on the way has left of each colour
+	vec3 absorb = fr.medium.xyz;	// of the liquid the path is in now; none in air
+	vec3 shaft_at = vec3(0.0);		// where to look for what it scatters towards the eye,
+	vec3 shaft_weight = vec3(0.0);	// and how much that counts for; none: not this frame
+	// the view modes that leave part of the light out, or measure something
+	const int view_mode = fr.bases.x;
+	const bool furnace = view_mode == VIEW_FURNACE;
+	const float direct_on = view_mode == VIEW_INDIRECT ? 0.0 : 1.0;
+	const float indirect_on = view_mode == VIEW_DIRECT ? 0.0 : 1.0;
+	if (furnace)
+		absorb = vec3(0.0);
+	float entered = 0.0;		// where along the current ray that began
+	float travelled = 0.0;		// along the path so far, which water may have bent
+	vec3 front_add = vec3(0.0);		// from the layers: what they emit
+	vec3 front_diffuse = vec3(0.0);	// what they scatter, which is noisy
+	vec3 front_mirror = vec3(0.0);	// and what they mirror, noisy too
+	float mirror_weight = 0.0;		// of the strongest reflection so far
+	vec3 over_pos = vec3(0.0);		// where what the layers show appears to be
+	bool have_layer = false;
+	vec3 layer_p = vec3(0.0), layer_n = vec3(0.0);
+	float layer_depth = 0.0, layer_roughness = 0.0;
+	bool solid = false;
+	Hit hit;
+	Material base;
+	Surface surf;
+	vec3 sky = vec3(0.0);
+	bool sky_hit = false;		// the view ends at the sky, at sky_p
+	vec3 sky_p = vec3(0.0), sky_n = vec3(0.0);
+	float sky_depth = 0.0;
+
+	for (int layer = 0; through > 0.001; layer++)
+	{
+		bool found = Closest(origin, dir, tmin, true, false, held_apart ? MASK_SCENE : MASK_ALL, true, hit, base);
+		if (have_held && travelled <= 0.0 && (!found || held_hit.t < hit.t))
+		{
+			// the weapon is the nearest thing: from here on this is the
+			// unblurred path
+			hit = held_hit;
+			base = held_mat;
+			origin = eye = fr.origin.xyz;
+			dir = eye_dir = frame_dir;
+			have_held = false;
+			found = true;
+		}
+		if (!found)
+		{
+			if (furnace)
+				sky = vec3(FURNACE_LIGHT * through);
+			break;
+		}
+		if ((base.flags & MAT_SKY) != 0u)
+		{
+			sky = Sky(dir) * through;
+			if (view_mode != VIEW_NORMAL)
+				sky = furnace ? vec3(FURNACE_LIGHT * through)
+					: (view_mode >= VIEW_BASE_COLOUR ? vec3(0.0) : sky * direct_on);
+			sky_hit = true;
+			sky_p = origin + dir * hit.t;
+			const vec3 face = normalize(cross(Corner(hit.moving, hit.tri, 1) - Corner(hit.moving, hit.tri, 0),
+				Corner(hit.moving, hit.tri, 2) - Corner(hit.moving, hit.tri, 0)));
+			sky_n = dot(face, dir) < 0.0 ? face : -face;
+			sky_depth = travelled + hit.t;
+			break;
+		}
+		MakeSurface(hit, base, origin, dir, fr.settings2.y != 0, surf);
+		if (view_mode == 0)
+			AddFroth(surf);
+		// A liquid scatters a little of the light in it towards the eye: it
+		// glows where light comes down through it, in shafts the waves and
+		// whatever stands in the light's way break up.
+		const float shafts = fr.liquid.z * (absorb.r + absorb.g + absorb.b) * 0.1;		// what it scatters, per unit: a third of what it soaks up
+		// (Looked for one frame in four, and counted four times: it is faint,
+		// and gathered. Where the path goes through liquid more than once,
+		// in the last of it.)
+		if (shafts > 0.0 && view_mode == 0 && hit.t > entered && Rand() < 0.25)
+		{
+			const float at = mix(entered, hit.t, Rand());
+			shaft_at = origin + dir * at;
+			shaft_weight = tint * Fade(absorb, at - entered) * (shafts * INV_PI * (hit.t - entered) * through);
+		}
+		tint *= Fade(absorb, hit.t - entered);
+		entered = hit.t;
+		if (view_mode >= VIEW_LIGHTING)
+		{
+			if (view_mode == VIEW_LIGHTING)
+				WhiteSurface(surf);
+			else if (view_mode >= VIEW_BASE_COLOUR && view_mode <= VIEW_GLOW)
+			{
+				// the first surface met is all there is to show
+				imageStore(img_surface[now], pixel, vec4(surf.n, hit.t));
+				imageStore(img_seen, pixel, vec4(surf.p, surf.roughness));
+				imageStore(img_mirror[now], pixel, vec4(0.0, 0.0, 0.0, 3.0));
+				imageStore(img_over, pixel, vec4(0.0));
+				imageStore(img_albedo[0], pixel, vec4(0.0));
+				imageStore(img_albedo[1], pixel, vec4(0.0, 0.0, 0.0, surf.roughness));
+				imageStore(img_noisy[0], pixel, vec4(0.0));
+				imageStore(img_noisy[1], pixel, vec4(0.0));
+				imageStore(img_noisy[2], pixel, vec4(0.0));
+				imageStore(img_extra, pixel, vec4(SurfaceChannel(view_mode, surf), 1.0));
+				imageStore(img_flash[now], pixel, vec4(0.0));
+				ExportNone(pixel);
+				return;
+			}
+		}
+		if (surf.mat.alpha >= 1.0 || layer >= MAX_LAYERS)
+		{
+			solid = true;
+			break;
+		}
+
+		if (!have_layer)
+		{
+			have_layer = true;
+			layer_p = surf.p;
+			layer_n = surf.n;
+			layer_depth = travelled + hit.t;
+			layer_roughness = surf.roughness;
+		}
+		if (mirror_weight <= 0.0)
+			over_pos = surf.p;
+
+		// Glass and water are clear materials with a tint painted on. The
+		// boundary reflects some of the light, more at a glancing angle, and
+		// lets the rest in; water bends it on the way.
+		bool bent = false, shut = false;
+		if ((surf.mat.flags & MAT_BLACK) == 0u && surf.roughness < LIGHT_SAMPLED_ROUGHNESS)
+		{
+			const bool waves = (surf.mat.flags & MAT_WAVES) != 0u;
+			const bool liquid = waves && fr.settings2.x != 0;
+			const float cosi = clamp(dot(surf.n, surf.wo), 0.0, 1.0);
+			float fresnel, cost = 0.0;
+			float eta = 1.0;
+			if (liquid)
+			{
+				// its underside faces down: there the eye is in the water looking out
+				eta = surf.tri_n.z < -0.5 ? WATER_INDEX : 1.0 / WATER_INDEX;
+				fresnel = Dielectric(cosi, eta, cost);
+			}
+			else
+			{
+				// a pane: in one face and out the other with no net bend, and
+				// both faces reflect
+				const float one = Dielectric(cosi, 1.0 / GLASS_INDEX, cost);
+				fresnel = 2.0 * one / (1.0 + one);
+			}
+
+			// with reflections off the light simply all goes through
+			if (reflections < 1 && fresnel < 1.0)
+				fresnel = 0.0;
+			// froth is wet and shines, but less than the liquid under it
+			const float shine = fresnel * (1.0 - 0.75 * surf.froth);
+			shut = fresnel >= 1.0;
+			// Froth is matt, and lit by the room as well as by its lamps.
+			// Half the rays that would have gone to look for what the
+			// surface mirrors go to look for that light instead; from under
+			// the liquid it is the light above that comes through.
+			const bool scatter = surf.froth > 0.0 && Rand() < 0.5;
+			const float chosen = surf.froth > 0.0 ? 0.5 : 1.0;
+			if (shine > 0.0 || scatter)
+			{
+				vec3 mirror = surf.n * (2.0 * dot(surf.n, surf.wo)) - surf.wo;
+				if (dot(mirror, surf.ng) < 0.0)
+					mirror -= surf.ng * (2.0 * dot(mirror, surf.ng));
+				float side = 1.0;
+				if (scatter)
+				{
+					side = surf.tri_n.z < -0.5 ? -1.0 : 1.0;
+					mirror = SampleDiffuse(surf) * side;
+				}
+				float reached;
+				const float weight = scatter ? 0.0 : through * shine;
+				const vec3 found = ClampSample(Radiance(surf.p + surf.ng * (side * RAY_OFFSET), mirror, !scatter, 1, fr.settings.w, reached),
+					max_sample);
+				if (scatter)
+					front_mirror += found * surf.kd * (through * (1.0 - shine) * (shut ? 1.0 : surf.mat.alpha) / chosen);
+				else
+					front_mirror += found * (weight / chosen);
+
+				// A reflection appears to sit behind the glass, as far again
+				// as the thing reflected is in front. That is where to look
+				// for it in last frame's picture.
+				if (weight > mirror_weight)
+				{
+					mirror_weight = weight;
+					over_pos = eye + eye_dir * (travelled + hit.t + min(reached, 100000.0));
+				}
+			}
+			through *= 1.0 - shine;
+
+			// going in, the liquid starts soaking up light; coming out, it stops
+			if (waves)
+				absorb = surf.tri_n.z < -0.5 ? vec3(0.0) : surf.mat.absorb.rgb;
+
+			if (liquid && fresnel < 1.0)
+			{
+				// into (or out of) the water
+				travelled += hit.t;
+				origin = surf.p - surf.ng * RAY_OFFSET;
+				dir = normalize(dir * eta + surf.n * (eta * cosi - cost));
+				if (dot(dir, surf.ng) > 0.0)
+					dir = normalize(dir - surf.ng * (2.0 * dot(dir, surf.ng)));
+				tmin = 0.0;
+				entered = 0.0;
+				bent = true;
+			}
+		}
+
+		// the painted tint: covers its share of what is behind and shows lit itself
+		// where the liquid lets nothing out, froth has all that it does not mirror
+		const float cover = shut && surf.froth > 0.0 ? 1.0 : surf.mat.alpha;
+		const float share = through * cover;
+		if (surf.froth > 0.0 && surf.tri_n.z < -0.5)
+		{
+			// froth seen from under the liquid: what lights it is above,
+			// and comes through it
+			surf.n = -surf.n;
+			surf.ng = -surf.ng;
+		}
+		if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
+			front_add += Emitted(surf, true) * share;
+		if (share > 0.0 && MaxComponent(surf.kd) > 0.0)
+			front_diffuse += surf.kd * (DirectWorld(surf, true).diffuse + DirectFrameOne(surf).diffuse) * (INV_PI * share);
+		through *= 1.0 - cover;
+		if (!bent)
+			tmin = hit.t + 0.01;
+	}
+
+	// the layers' light is noisy and is gathered and filtered like the rest
+	vec3 over = have_layer ? ClampSample(front_diffuse * direct_on + front_mirror * indirect_on, max_sample) : vec3(0.0);
+
+	if (!solid)
+	{
+		// Nothing solid behind: sky, or nothing at all. If a layer was
+		// crossed it stands in as the surface, so that its light is still
+		// gathered over time; failing that, the place where the sky begins.
+		vec3 beyond = front_add * direct_on + sky * tint;
+		const bool stand_in = have_layer || sky_hit;
+		const float stand_depth = have_layer ? layer_depth : sky_depth;
+
+		// the air in front of the sky scatters light like any other: the
+		// sky is dimmed by it and the shafts in it show
+		const float air = stand_in ? fog : 0.0;
+		if (air > 0.0 || MaxComponent(shaft_weight) > 0.0)
+		{
+			over += FogGlow(eye, eye_dir, stand_depth, air, max_sample, shaft_at, shaft_weight) * direct_on;
+			if (air > 0.0)
+				beyond *= exp(-fog * (sky_hit ? sky_depth : layer_depth));
+		}
+
+		imageStore(img_surface[now], pixel, vec4(have_layer ? layer_n : sky_n, stand_in ? stand_depth : -1.0));
+		imageStore(img_seen, pixel, vec4(have_layer ? layer_p : (sky_hit ? sky_p : eye + eye_dir * 100000.0),
+			have_layer ? layer_roughness : 1.0));
+		imageStore(img_mirror[now], pixel, vec4(0.0, 0.0, 0.0, (have_layer ? layer_roughness : 1.0) + 2.0));
+		imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
+		imageStore(img_albedo[0], pixel, vec4(0.0));
+		imageStore(img_albedo[1], pixel, vec4(0.0, 0.0, 0.0, have_layer ? layer_roughness : 1.0));
+		imageStore(img_noisy[0], pixel, view_mode == VIEW_COST ? vec4(vec3(float(rays_traced)), 0.0) : vec4(0.0));
+		imageStore(img_noisy[1], pixel, vec4(0.0));
+		imageStore(img_noisy[2], pixel, vec4(over, 0.0));
+		imageStore(img_extra, pixel, vec4(beyond, 1.0));
+		imageStore(img_flash[now], pixel, vec4(0.0));
+		ExportNone(pixel);
+		return;
+	}
+
+	if (view_mode == 0 && fr.size.z > 0)
+		AddWater(surf, MaxComponent(absorb) > 0.0);
+	vec3 kd = surf.kd * through * tint;
+	const vec3 spec_albedo = max(SpecularAlbedo(surf), vec3(MIN_DEMODULATE));
+	vec3 ks = spec_albedo * through * tint;
+	const bool has_diffuse = MaxComponent(surf.kd) > 0.0;
+	const bool has_specular = MaxComponent(surf.f0) > 0.0;
+	const float depth = travelled + hit.t;
+
+	// where to look for this point in the last frame's picture: where the
+	// eye would see it without the water's bend, or where it was if it moved
+	// (not with motion blur, which looks nothing up and wants it where it is)
+	vec3 seen = travelled > 0.0 ? eye + eye_dir * depth : surf.p;
+	const bool moved = travelled <= 0.0 && hit.moving && fr.frame_has.y != 0 && !blur;
+	if (moved)
+	{
+		const int i = hit.tri * 9;
+		const vec3 q0 = vec3(frame_prev.v[i], frame_prev.v[i + 1], frame_prev.v[i + 2]);
+		const vec3 q1 = vec3(frame_prev.v[i + 3], frame_prev.v[i + 4], frame_prev.v[i + 5]);
+		const vec3 q2 = vec3(frame_prev.v[i + 6], frame_prev.v[i + 7], frame_prev.v[i + 8]);
+		seen = q0 * (1.0 - hit.bary.x - hit.bary.y) + q1 * hit.bary.x + q2 * hit.bary.y;
+	}
+
+	// exact, so it skips the filters; the balls of light come with the map's lights below
+	const Lit flash = DirectFrameAll(surf);
+	// (the matte part has what the shine leaves here too, by the shine's
+	// share on the whole, which has no noise in it)
+	vec3 flash_light = (surf.kd * (1.0 - SpecularAlbedo(surf)) * flash.diffuse * INV_PI + flash.specular) * tint * through;
+	vec3 extra = front_add + flash_light;
+	if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
+		extra += Emitted(surf, true) * tint * through;
+	extra *= direct_on;
+
+	// Air that scatters light: some of what the surface sends is lost on the
+	// way, and the air itself glows where light falls through it, which is
+	// what shows as shafts. A few points along the way are sampled per frame.
+	if (fog > 0.0 || MaxComponent(shaft_weight) > 0.0)
+	{
+		const float reach = have_layer ? layer_depth : hit.t;		// the straight part of the view
+		over += FogGlow(eye, eye_dir, reach, fog, max_sample, shaft_at, shaft_weight) * direct_on;
+	}
+	if (fog > 0.0)
+	{
+		const float kept = exp(-fog * depth);
+		kd *= kept;
+		ks *= kept;
+		extra *= kept;
+		flash_light *= kept;
+	}
+	// what the frame's lights put here, to be compared with last frame's
+	imageStore(img_flash[now], pixel, vec4(FrameLightLevel(surf, flash_light * direct_on, eye, eye_dir,
+		have_layer ? layer_depth : hit.t, fog)));
+
+	// a specular path costs as much as a diffuse one; where the lobe reflects
+	// little, take it only some of the time
+	const float spec_chance = (!has_specular || reflections < 2) ? 0.0
+		: min(1.0, max(0.1, Luminance(SpecularAlbedo(surf)) * 10.0) * fr.settings_f.y);
+
+	const int bounces = fr.settings.x;
+	const int paths = max(1, fr.settings2.z);
+	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
+	vec2 moments_d = vec2(0.0), moments_s = vec2(0.0);	// the paths' luminance and its square, summed
+	float spec_reach = -1.0;		// how far the last specular path went before its first hit
+
+	const int NO_PATH = 0, ON_MATTE = 1, ON_SHINE = 2;
+	const vec3 from = surf.p + surf.ng * RAY_OFFSET;
+	for (int k = 0; k < paths; k++)
+	{
+		// The shine takes its share of the light first and the matte part
+		// has what is left, so the two together never reflect more than
+		// falls on them: see PathGoOn. The share is that of one way the
+		// light could be mirrored, which is the way followed below.
+		vec3 mirrored, shine;
+		if (!has_specular || !SampleSpecular(surf, mirrored, shine))
+			shine = vec3(0.0);
+
+		const Lit direct = DirectWorld(surf, true), ball = DirectFrameBall(surf);
+		vec3 d = (1.0 - shine) * (direct.diffuse + ball.diffuse) * (INV_PI * direct_on);
+		vec3 sp = (direct.specular + ball.specular) / spec_albedo * direct_on;
+		int followed_d = 0, followed_s = 0;		// rays the diffuse and the specular path were made of
+
+		if (bounces > 0 && indirect_on > 0.0)
+		{
+			// The reflection is followed only some of the time, and counts
+			// for more when it is. The matte part gives up as much as the
+			// reflection counts for, and nothing when it is not followed, so
+			// that the two still add up; the chance is never less than the
+			// share, or the matte part would have to give up more than it has.
+			const float chance = spec_chance > 0.0 ? min(1.0, max(spec_chance, MaxComponent(shine))) : 0.0;
+			const bool follow = chance > 0.0 && Rand() < chance && MaxComponent(shine) > 0.0;
+			const vec3 kept = follow ? 1.0 - shine * (1.0 / chance) : vec3(1.0);
+
+			// A path off the matte part and then, if it is followed, one off
+			// the shine (see Radiance), in one loop: a step of whichever the
+			// pixel is on to a turn. The card runs the pixels of a tile in
+			// step, every one waiting while any other has work to do in a part
+			// of the shader. With a loop for each path they all waited out
+			// the longest of each, and most paths are short; here a pixel
+			// whose first path has ended is on its second while others are
+			// still on their first. What a pixel does, and the order it does
+			// it in, is as it was.
+			int stage = NO_PATH;
+			Path path;
+			rays_followed = 0;
+			if (has_diffuse)
+			{
+				path = PathFrom(from, SampleDiffuse(surf), false, 1, bounces);
+				stage = ON_MATTE;
+			}
+			else if (follow)
+			{
+				path = PathFrom(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w);
+				stage = ON_SHINE;
+			}
+			while (stage != NO_PATH)
+			{
+				Surface s;
+				bool shiny;
+				if (PathMeet(path, s, shiny))
+				{
+					vec3 its_mirrored, its_shine;
+					if (!shiny || !SampleSpecular(s, its_mirrored, its_shine))
+						its_shine = vec3(0.0);
+					const Lit world = DirectWorld(s, false), frame = DirectFrameOne(s);
+					PathGoOn(path, s, its_mirrored, its_shine, world, frame);
+				}
+				if (!path.ended)
+					continue;
+				if (stage == ON_MATTE)
+				{
+					d += kept * path.radiance;
+					followed_d = rays_followed;
+					stage = NO_PATH;
+					if (follow)
+					{
+						rays_followed = 0;
+						path = PathFrom(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w);
+						stage = ON_SHINE;
+					}
+				}
+				else
+				{
+					sp += shine * path.radiance / spec_albedo * (1.0 / chance);
+					followed_s = rays_followed;
+					spec_reach = path.reached;
+					stage = NO_PATH;
+				}
+			}
+		}
+		else if (furnace)
+			d += vec3(FURNACE_LIGHT);		// a path with no bounces to run out of
+		if (view_mode == VIEW_BOUNCES)
+		{
+			// the count in place of the light, to be gathered and filtered as light is
+			d = vec3(float(max(followed_d, followed_s)));
+			sp = vec3(0.0);
+		}
+		d = ClampSample(d, max_sample);
+		sp = ClampSample(sp, max_sample);
+		sum_d += d;
+		sum_s += sp;
+		const float ld = Luminance(d), ls = Luminance(sp);
+		moments_d += vec2(ld, ld * ld);
+		moments_s += vec2(ls, ls * ls);
+	}
+
+	// A reflection in something close to a mirror appears to sit behind the
+	// surface, as far again as the thing reflected is in front of it. That is
+	// where to look for it in last frame's picture.
+	const bool spec_ok = spec_reach >= 0.0 && surf.roughness < LIGHT_SAMPLED_ROUGHNESS && !moved && travelled <= 0.0;
+	const vec3 spec_pos = spec_ok ? eye + eye_dir * (hit.t + min(spec_reach, 100000.0)) : vec3(0.0);
+
+	imageStore(img_surface[now], pixel, vec4(surf.n, depth));
+	imageStore(img_seen, pixel, vec4(seen, surf.roughness));
+	imageStore(img_mirror[now], pixel, vec4(spec_pos, surf.roughness + (spec_ok ? 0.0 : 2.0)));
+	imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
+	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
+	imageStore(img_albedo[1], pixel, vec4(ks, surf.roughness));
+	if (fr.size.w != 0)
+	{
+		// for export: see pt.h's PT_PLANE_
+		const vec3 given = ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front) ? Emitted(surf, true) : vec3(0.0);
+		imageStore(img_export[0], pixel, vec4(given, surf.metallic));
+		imageStore(img_export[1], pixel, vec4(float(TriOf(hit).material), float(hit.tri), hit.moving ? 1.0 : 0.0, 0.0));
+		vec3 every_d, every_s;
+		DirectEveryLight(surf, every_d, every_s);
+		imageStore(img_export[2], pixel, vec4(every_d, 0.0));
+		imageStore(img_export[3], pixel, vec4(every_s, 0.0));
+	}
+	// how much the paths disagreed among themselves, the first measure of
+	// the noise in this pixel; one path alone can say nothing
+	const float inv_paths = 1.0 / float(paths);
+	float var_d = max(moments_d.y * inv_paths - moments_d.x * moments_d.x * inv_paths * inv_paths, 0.0);
+	float var_s = max(moments_s.y * inv_paths - moments_s.x * moments_s.x * inv_paths * inv_paths, 0.0);
+	if (view_mode == VIEW_COST)
+	{
+		// the rays in place of the light, to be gathered and filtered as light is
+		sum_d = vec3(float(rays_traced * paths));
+		sum_s = vec3(0.0);
+		var_d = var_s = 0.0;
+	}
+	imageStore(img_noisy[0], pixel, vec4(sum_d * inv_paths, var_d));
+	imageStore(img_noisy[1], pixel, vec4(sum_s * inv_paths, var_s));
+	imageStore(img_noisy[2], pixel, vec4(over, 0.0));
+	imageStore(img_extra, pixel, vec4(extra, 1.0));
+}
