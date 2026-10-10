@@ -261,7 +261,7 @@ void main()
 		if ((surf.mat.flags & MAT_BLACK) == 0u && surf.roughness < LIGHT_SAMPLED_ROUGHNESS)
 		{
 			const bool waves = (surf.mat.flags & MAT_WAVES) != 0u;
-			const bool liquid = waves && fr.settings2.x != 0;
+			const bool liquid = waves && (fr.settings2.x & 1) != 0;
 			const float cosi = clamp(dot(surf.n, surf.wo), 0.0, 1.0);
 			float fresnel, cost = 0.0;
 			float eta = 1.0;

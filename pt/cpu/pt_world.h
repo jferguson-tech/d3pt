@@ -138,6 +138,8 @@ struct Light
 	float		radius = 0.0f;	// the frame's: above 0 a ball of light, not a point
 	float		reach = 0.0f;	// points: above 0, how far the light goes
 	float		core = 0.0f;	// points: above 0, the least distance it is taken to be at
+	Vec3		box_origin, box_size;	// points: a lit volume, if all of box_size is above 0
+	bool		no_shadow = false;	// points: nothing stops its light
 	int			given = -1;		// the map's points: which of the lights load_world was given
 };
 

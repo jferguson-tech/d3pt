@@ -173,6 +173,19 @@ typedef struct pt_point_light_s
 								   no less than core. For a light an engine draws
 								   no brighter close to than its colour, which as
 								   a true point would burn out all that is near it */
+	float		box_origin[3];	/* points, not balls. With all of box_size above 0 */
+	float		box_size[3];	/* the light is an engine's lit volume: it lights
+								   only what is inside the box that is box_size to
+								   each side of box_origin, along the world's axes,
+								   brightest at box_origin and fading to nothing
+								   at the box's faces: times 1 - (d / size)^2 for
+								   each axis. This is in place of reach's fade;
+								   reach is still to be given, as far as any of
+								   the box is from origin, which need not be
+								   inside it: origin is where the light comes
+								   from, the box what it lights. */
+	int			no_shadow;		/* points, not balls: nothing stops its light, as
+								   an engine's fill light that casts no shadows */
 	float		radius;			/* scene only: above 0 the light is a ball of this
 								   size, as bright all over, which gives off the
 								   same light in all as the point would: its
@@ -352,6 +365,14 @@ typedef struct pt_view_s
 	float	reflection_rate;	/* scales how often a rough surface gets a
 								   reflection path; 1 = the backend's own choice */
 	int		refraction;			/* liquids bend the view */
+	int		shadow_faces;		/* which side of a surface stops light on its way
+								   from a light. 0: the side turned away from the
+								   light, as it is met by a ray sent to the light.
+								   1: the side turned to the light, as an engine
+								   that draws shadow volumes casts them. Closed
+								   shapes shadow the same either way. With 1 a
+								   light set inside a solid shines out of it, as
+								   in such an engine, whose maps count on it */
 	float	wave_strength;		/* ripples on liquids; 0 = flat, 1 = normal */
 	float	wave_reach;			/* no wave picture holds a height further than this
 								   from level this frame, in units */

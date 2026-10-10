@@ -94,6 +94,10 @@ struct Light
 	float	cone_cos;	// and how wide; 0 = all round
 	vec3	edge;		// triangles: from the first corner to the third
 	float	radius;		// the frame's: above 0 a ball of light, not a point
+	vec3	box_origin;	// points: a lit volume, if box_size is above 0
+	float	no_shadow;	// points: above 0, nothing stops its light
+	vec3	box_size;
+	float	pad;
 };
 const uint POINT_LIGHT = 0xffffff00u;
 
@@ -422,6 +426,29 @@ struct Hit
 	float	t;
 };
 
+// How far a point light that only goes so far has faded at p, dist2 from it;
+// 0 where it does not reach. See pt_point_light_t's reach and box_size.
+float LightFade(Light l, vec3 p, float dist2)
+{
+	if (l.box_size.x > 0.0)
+	{
+		const vec3 u = abs(p - l.box_origin) / l.box_size;
+		if (max(u.x, max(u.y, u.z)) >= 1.0)
+			return 0.0;
+		const vec3 w = 1.0 - u * u;
+		return w.x * w.y * w.z;
+	}
+	if (l.edge.x > 0.0)
+	{
+		float w = dist2 / (l.edge.x * l.edge.x);
+		if (w >= 1.0)
+			return 0.0;
+		w = 1.0 - w * w;
+		return w * w;
+	}
+	return 1.0;
+}
+
 // The instances of the scene carry one of these masks: everything but what
 // the eye carries (the weapon in hand) has MASK_SCENE, that has MASK_HELD.
 const uint MASK_SCENE = 1u;
@@ -433,10 +460,11 @@ int rays_traced = 0;
 
 // the nearest thing along the ray among the instances the mask lets through,
 // taking every triangle as it comes; glass is only met from its front
-bool Nearest(vec3 origin, vec3 dir, float tmin, float tmax, uint mask, out Hit hit)
+bool Nearest(vec3 origin, vec3 dir, float tmin, float tmax, uint mask, bool from_behind, out Hit hit)
 {
 	rayQueryEXT query;
-	rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsCullBackFacingTrianglesEXT,
+	rayQueryInitializeEXT(query, scene,
+		gl_RayFlagsOpaqueEXT | (from_behind ? gl_RayFlagsCullFrontFacingTrianglesEXT : gl_RayFlagsCullBackFacingTrianglesEXT),
 		mask, origin, tmin, dir, tmax);
 	while (rayQueryProceedEXT(query))
 		;
@@ -453,9 +481,14 @@ bool Nearest(vec3 origin, vec3 dir, float tmin, float tmax, uint mask, out Hit h
 	return true;
 }
 
+bool Nearest(vec3 origin, vec3 dir, float tmin, float tmax, uint mask, out Hit hit)
+{
+	return Nearest(origin, dir, tmin, tmax, mask, false, hit);
+}
+
 bool Nearest(vec3 origin, vec3 dir, float tmin, float tmax, out Hit hit)
 {
-	return Nearest(origin, dir, tmin, tmax, MASK_ALL, hit);
+	return Nearest(origin, dir, tmin, tmax, MASK_ALL, false, hit);
 }
 
 Tri TriOf(Hit hit)
@@ -782,7 +815,8 @@ float Visible(vec3 p, vec3 target, bool bent, vec3 q)
 	for (int skips = 0; skips < 16; skips++)
 	{
 		Hit hit;
-		if (!Nearest(o, d, tmin, 0.999, hit))
+		// (see pt_view_t's shadow_faces: met from behind, a triangle is one turned to the light)
+		if (!Nearest(o, d, tmin, 0.999, MASK_ALL, (fr.settings2.x & 2) != 0, hit))
 		{
 			if (!bent)
 				return 1.0;
@@ -1432,6 +1466,7 @@ Lit DirectLights(Surface s, bool first_hit)
 	float wsum = 0.0;
 	vec3 chosen_y = vec3(0.0), chosen_wi = vec3(0.0), chosen_e = vec3(0.0);
 	float chosen_phat = 0.0;
+	bool chosen_free = false;		// it casts no shadows
 
 	const bool has_grid = fr.grid_dims.w != 0;
 	const int cell = has_grid ? GridCell(s.p) : 0;
@@ -1527,14 +1562,12 @@ Lit DirectLights(Surface s, bool first_hit)
 		float geom = 1.0 / dist2;
 		if (!area && l.radius <= 0.0)
 			geom = 1.0 / max(dist2, l.edge.y * l.edge.y);		// see pt_point_light_t's core
-		if (!area && l.radius <= 0.0 && l.edge.x > 0.0)
+		if (!area && l.radius <= 0.0)
 		{
-			// a point light of the map that only goes so far: see pt_point_light_t's reach
-			float w = dist2 / (l.edge.x * l.edge.x);
-			if (w >= 1.0)
+			const float fade = LightFade(l, s.p, dist2);
+			if (fade <= 0.0)
 				continue;
-			w = 1.0 - w * w;
-			geom *= w * w;
+			geom *= fade;
 		}
 		if (area)
 		{
@@ -1556,6 +1589,7 @@ Lit DirectLights(Surface s, bool first_hit)
 			chosen_wi = wi;
 			chosen_e = e;
 			chosen_phat = phat;
+			chosen_free = !area && l.no_shadow > 0.0;
 		}
 	}
 
@@ -1575,7 +1609,7 @@ Lit DirectLights(Surface s, bool first_hit)
 		bent = Bend(Leave(s), chosen_y, crossing, gets_in);
 
 	Lit lit = none;
-	const float clear = Visible(Leave(s), chosen_y, bent, crossing) * gets_in;
+	const float clear = (chosen_free ? 1.0 : Visible(Leave(s), chosen_y, bent, crossing)) * gets_in;
 	if (clear > 0.0)
 		lit = Reflect(s, chosen_wi, chosen_e * clear);
 	if (fr.size.z > 0)
@@ -1639,6 +1673,13 @@ Lit DirectSky(Surface s)
 	return Reflect(s, wi, SkyAt(sky_dir) * (1.0 / (pdf * chance)));
 }
 
+// Whether anything is between a surface and the place its light comes from,
+// for a light that may be one that casts no shadows
+float VisibleTo(Surface s, Light l, vec3 at)
+{
+	return l.radius <= 0.0 && l.no_shadow > 0.0 ? 1.0 : Visible(Leave(s), at);
+}
+
 Lit DirectWorld(Surface s, bool first_hit)
 {
 	if (fr.bases.x == VIEW_FURNACE)
@@ -1661,15 +1702,10 @@ Lit PointLight(Surface s, Light l)
 	if (l.cone_cos > 0.0 && -dot(wi, l.dir) < l.cone_cos)
 		return Lit(vec3(0.0), vec3(0.0));		// outside the spotlight's cone
 	float geom = 1.0 / max(dist2, l.edge.y * l.edge.y);		// see pt_point_light_t's core
-	if (l.edge.x > 0.0)
-	{
-		// it only goes so far: see pt_point_light_t's reach
-		float w = dist2 / (l.edge.x * l.edge.x);
-		if (w >= 1.0)
-			return Lit(vec3(0.0), vec3(0.0));
-		w = 1.0 - w * w;
-		geom *= w * w;
-	}
+	const float fade = LightFade(l, s.p, dist2);
+	if (fade <= 0.0)
+		return Lit(vec3(0.0), vec3(0.0));
+	geom *= fade;
 	return Reflect(s, wi, l.emission * geom);
 }
 
@@ -1770,7 +1806,7 @@ Lit FrameOne(Surface s, bool balls)
 			Lit f = FrameLight(s, frame_lights.l[i], at);
 			if (Importance(s, f) <= 0.0)
 				return none;
-			const float clear = Visible(Leave(s), at);
+			const float clear = VisibleTo(s, frame_lights.l[i], at);
 			if (clear <= 0.0)
 				return none;
 			f.diffuse *= clear * total / imp;
@@ -1804,7 +1840,7 @@ Lit DirectFrameAll(Surface s)
 		if (frame_lights.l[i].radius > 0.0)
 			continue;
 		const Lit f = PointLight(s, frame_lights.l[i]);
-		if (Importance(s, f) > 0.0 && Visible(Leave(s), frame_lights.l[i].origin) > 0.0)
+		if (Importance(s, f) > 0.0 && VisibleTo(s, frame_lights.l[i], frame_lights.l[i].origin) > 0.0)
 		{
 			sum.diffuse += f.diffuse;
 			sum.specular += f.specular;
@@ -1857,14 +1893,12 @@ void DirectEveryLight(Surface s, out vec3 diffuse, out vec3 specular)
 		float geom = 1.0 / dist2;
 		if (!area && l.radius <= 0.0)
 			geom = 1.0 / max(dist2, l.edge.y * l.edge.y);		// see pt_point_light_t's core
-		if (!area && l.radius <= 0.0 && l.edge.x > 0.0)
+		if (!area && l.radius <= 0.0)
 		{
-			// a point light of the map that only goes so far: see pt_point_light_t's reach
-			float w = dist2 / (l.edge.x * l.edge.x);
-			if (w >= 1.0)
+			const float fade = LightFade(l, s.p, dist2);
+			if (fade <= 0.0)
 				continue;
-			w = 1.0 - w * w;
-			geom *= w * w;
+			geom *= fade;
 		}
 		if (area)
 		{

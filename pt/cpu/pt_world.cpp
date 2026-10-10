@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <utility>
 
 namespace PT_NS {
@@ -179,7 +180,7 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 				}
 		}
 	}
-	const auto blocks = [&](uint32_t i, float, float)
+	const auto solid = [&](uint32_t i)
 	{
 		const Material &m = *w.tris[i].mat;
 		return m.alpha >= 1.0f && !(m.flags & (PT_MAT_NO_SHADOW | PT_MAT_ALPHA_TEST | PT_MAT_SKY));
@@ -196,7 +197,22 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 			const Vec3 d = l.origin - centre;
 			// what it puts on the cell: see pt_point_light_t's core and reach
 			float score = power[li] / std::max(std::max(Dot(d, d), min_dist2), l.core * l.core);
-			if (l.reach > 0.0f)
+			if (l.box_size.x > 0.0f)
+			{
+				// a lit volume: what it puts on the cell's middle, were the
+				// box larger by half the cell, so that a cell it only
+				// touches has it too
+				const Vec3 off = centre - l.box_origin;
+				const float half = std::sqrt(min_dist2);
+				float fade = 1.0f;
+				for (int a = 0; a < 3; a++)
+				{
+					const float u = std::fabs(off[a]) / (l.box_size[a] + half);
+					fade *= u >= 1.0f ? 0.0f : 1.0f - u * u;
+				}
+				score *= fade;
+			}
+			else if (l.reach > 0.0f)
 			{
 				// It fades out towards its reach, and a light that does not
 				// reach any of the cell is not one of its lights. Without
@@ -209,7 +225,7 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 			}
 			// one that can be seen from none of the cell's places keeps a small
 			// chance: they are not all the places there are
-			if (score > 0.0f && l.tri == ~0u && l.reach > 0.0f && any_reach && seen_count[ci])
+			if (score > 0.0f && l.tri == ~0u && l.reach > 0.0f && !l.no_shadow && any_reach && seen_count[ci])
 			{
 				bool seen = false;
 				for (int i = 0; i < seen_count[ci] && !seen; i++)
@@ -219,7 +235,13 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 					ray.d = l.origin - ray.o;
 					ray.tmin = 0.0f;
 					ray.tmax = 0.999f;
-					seen = !w.bvh.AnyHit(ray, blocks);
+					// Hidden only if something stops the light whichever side of
+					// a surface is taken to cast its shadow (pt_view_t's
+					// shadow_faces, which is not known here): a light set
+					// inside a wall is seen from the room under one of the two.
+					const Vec3 d = ray.d;
+					seen = !w.bvh.AnyHit(ray, [&](uint32_t t, float, float) { return solid(t) && Dot(w.tris[t].n, d) > 0.0f; })
+						|| !w.bvh.AnyHit(ray, [&](uint32_t t, float, float) { return solid(t) && Dot(w.tris[t].n, d) < 0.0f; });
 				}
 				if (!seen)
 					score *= 0.02f;
@@ -524,6 +546,11 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		l.dir = Vec3(in->lights[i].direction);
 		l.reach = in->lights[i].reach > 0.0f ? in->lights[i].reach : 0.0f;
 		l.core = in->lights[i].core > 0.0f ? in->lights[i].core : 0.0f;
+		l.box_origin = Vec3(in->lights[i].box_origin);
+		l.box_size = Vec3(in->lights[i].box_size);
+		if (l.box_size.x <= 0.0f || l.box_size.y <= 0.0f || l.box_size.z <= 0.0f)
+			l.box_size = Vec3(0.0f);
+		l.no_shadow = in->lights[i].no_shadow != 0;
 		l.given = i;
 		l.cone_cos = in->lights[i].cone_cos;
 		const float p = Luminance(l.emission) * 4.0f * kPi;
