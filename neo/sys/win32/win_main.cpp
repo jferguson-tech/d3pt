@@ -373,7 +373,6 @@ Sys_Quit
 ==============
 */
 void Sys_Quit( void ) {
-	common->Printf( "TEMPTRACE Sys_Quit%c", 10 );
 	timeEndPeriod( 1 );
 	Sys_ShutdownInput();
 	Sys_DestroyConsole();
