@@ -91,6 +91,7 @@ idCVar r_ptShadowFaces( "r_ptShadowFaces", "1", CVAR_RENDERER | CVAR_BOOL | CVAR
 idCVar r_ptMaterials( "r_ptMaterials", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: read the bump and specular maps of materials; 0: their colour alone, all of them matte; needs reloadPathTrace" );
 idCVar r_ptSpecular( "r_ptSpecular", "1.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much of the light a surface reflects, for a white texel of its specular map; needs reloadPathTrace" );
 idCVar r_ptGloss( "r_ptGloss", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how rough a surface with a specular map is, 0.05 a mirror to 1; it sets how wide a highlight is; needs reloadPathTrace" );
+idCVar r_ptSky( "r_ptSky", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright the sky is, for a white texel of its pictures; it lights what it shines on; needs reloadPathTrace" );
 idCVar r_ptTonemap( "r_ptTonemap", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: how light is turned into a picture: 0 filmic, 1 neutral, 2 clipped as the game clips it" );
 idCVar r_ptContrast( "r_ptContrast", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: contrast of the picture, 1 = unchanged" );
 idCVar r_ptSaturation( "r_ptSaturation", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: saturation of the picture, 1 = unchanged" );
@@ -188,6 +189,7 @@ typedef struct {
 	idList<unsigned int>		indices;
 	idList<unsigned int>		triMaterials;
 	idList<pt_point_light_t>	lights;
+	const idImage *				sky;			// the six pictures of the first sky met with, or NULL
 } ptWorldBuild_t;
 
 static void PT_Log( const char *msg ) {
@@ -345,6 +347,80 @@ static bool PT_IsTraced( const idMaterial *shader ) {
 	return shader->Coverage() != MC_TRANSLUCENT || PT_IsGlass( shader );
 }
 
+/*
+================
+PT_SkyOf
+
+The six pictures a material shows the sky by, if that is what it does: the
+game draws such a surface with a picture looked up by the way the eye looks
+through it, not by where on the surface it is.
+================
+*/
+static const idImage *PT_SkyOf( const idMaterial *shader ) {
+	for ( int i = 0; i < shader->GetNumStages(); i++ ) {
+		const shaderStage_t *stage = shader->GetStage( i );
+		if ( stage->texture.image && ( stage->texture.texgen == TG_SKYBOX_CUBE || stage->texture.texgen == TG_WOBBLESKY_CUBE ) ) {
+			return stage->texture.image;
+		}
+	}
+	return NULL;
+}
+
+/*
+================
+PT_SkyFaces
+
+The sky's six pictures as the tracer wants them, each size by size and to be
+freed with R_StaticFree. The game's are the six faces of an OpenGL cube map
+whose axes are the world's. The tracer has its own way of laying a
+direction on a face (see pt_world_t's sky_textures), so each of its texels
+is looked up in the game's by its direction.
+================
+*/
+static bool PT_SkyFaces( const idImage *image, byte *faces[6], int &size ) {
+	byte *pics[6];
+	int i;
+
+	memset( pics, 0, sizeof( pics ) );
+	if ( !R_LoadCubeImages( image->imgName, image->cubeFiles, pics, &size, NULL ) || size <= 0 ) {
+		return false;
+	}
+	for ( int face = 0; face < 6; face++ ) {
+		const int a = face / 2, b = ( a + 1 ) % 3, c = ( a + 2 ) % 3;
+
+		faces[face] = (byte *) R_StaticAlloc( size * size * 4 );
+		for ( int y = 0; y < size; y++ ) {
+			for ( int x = 0; x < size; x++ ) {
+				float d[3];
+				d[a] = ( face & 1 ) ? -1.0f : 1.0f;
+				d[b] = 2.0f * ( x + 0.5f ) / size - 1.0f;
+				d[c] = 2.0f * ( y + 0.5f ) / size - 1.0f;
+
+				// OpenGL's choice of face and of where on it
+				const float ax = idMath::Fabs( d[0] ), ay = idMath::Fabs( d[1] ), az = idMath::Fabs( d[2] );
+				int		of;
+				float	sc, tc, ma;
+				if ( ax >= ay && ax >= az ) {
+					of = d[0] > 0.0f ? 0 : 1;	ma = ax;	sc = d[0] > 0.0f ? -d[2] : d[2];	tc = -d[1];
+				} else if ( ay >= az ) {
+					of = d[1] > 0.0f ? 2 : 3;	ma = ay;	sc = d[0];							tc = d[1] > 0.0f ? d[2] : -d[2];
+				} else {
+					of = d[2] > 0.0f ? 4 : 5;	ma = az;	sc = d[2] > 0.0f ? d[0] : -d[0];	tc = -d[1];
+				}
+				const int tx = idMath::ClampInt( 0, size - 1, (int) ( ( sc / ma + 1.0f ) * 0.5f * size ) );
+				const int ty = idMath::ClampInt( 0, size - 1, (int) ( ( tc / ma + 1.0f ) * 0.5f * size ) );
+				memcpy( &faces[face][( y * size + x ) * 4], &pics[of][( ty * size + tx ) * 4], 4 );
+			}
+		}
+	}
+	for ( i = 0; i < 6; i++ ) {
+		if ( pics[i] ) {
+			R_StaticFree( pics[i] );
+		}
+	}
+	return true;
+}
+
 // what is read of one of the game's materials for the tracer
 typedef struct {
 	byte	*base;			// its colour, and in alpha its holes; NULL for plain white
@@ -354,6 +430,7 @@ typedef struct {
 	byte	*shine;			// the colour it reflects head on; NULL for none
 	int		shineWidth, shineHeight;
 	bool	glows;			// it is shown unlit
+	const idImage *sky;		// it shows the sky: the six pictures of it, and nothing else is read
 	bool	holes;			// base's alpha cuts it out
 	bool	glass;			// a clear pane: base is its tint
 } ptRead_t;
@@ -409,6 +486,10 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 	int					i;
 
 	memset( &read, 0, sizeof( read ) );
+	read.sky = PT_SkyOf( shader );
+	if ( read.sky ) {
+		return;
+	}
 	for ( i = 0; i < shader->GetNumStages(); i++ ) {
 		const shaderStage_t *stage = shader->GetStage( i );
 		if ( !stage->texture.image || stage->texture.cinematic || stage->texture.dynamic != DI_STATIC ) {
@@ -512,6 +593,9 @@ static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int 
 	if ( read.holes ) {
 		material.flags |= PT_MAT_ALPHA_TEST;
 	}
+	if ( read.sky ) {
+		material.flags |= PT_MAT_SKY;
+	}
 	if ( read.glows ) {
 		// not lit by the game's lights: it shows as it is painted, so it glows
 		material.flags |= PT_MAT_EMIT_TEXTURE;
@@ -553,6 +637,9 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool
 		}
 	}
 	PT_ReadMaterial( shader, read, i == build.read.Num() );
+	if ( read.sky && !build.sky ) {
+		build.sky = read.sky;
+	}
 	if ( i == build.read.Num() ) {
 		byte	*pixels[3] = { read.base, read.detail, read.shine };
 		int		sizes[3][2] = { { read.baseWidth, read.baseHeight }, { read.detailWidth, read.detailHeight }, { read.shineWidth, read.shineHeight } };
@@ -896,6 +983,7 @@ static void PT_LoadWorld( const viewDef_t *viewDef ) {
 	int				i;
 	int				start = Sys_Milliseconds();
 
+	build.sky = NULL;
 	build.positions.SetGranularity( 65536 );
 	build.uvs.SetGranularity( 65536 );
 	build.indices.SetGranularity( 65536 );
@@ -932,7 +1020,23 @@ static void PT_LoadWorld( const viewDef_t *viewDef ) {
 	for ( i = 0; i < 6; i++ ) {
 		w.sky_textures[i] = -1;
 	}
-	w.sky_scale = 1.0f;
+	w.sky_scale = Max( 0.0f, r_ptSky.GetFloat() );
+
+	// the sky: one for the whole map, the first that any of its surfaces shows
+	byte	*skyFaces[6];
+	int		skySize = 0;
+	if ( build.sky && PT_SkyFaces( build.sky, skyFaces, skySize ) ) {
+		for ( i = 0; i < 6; i++ ) {
+			pt_texture_t texture;
+			texture.width = texture.height = skySize;
+			texture.pixels = (const uint32_t *) skyFaces[i];
+			build.pixels.Append( skyFaces[i] );
+			w.sky_textures[i] = build.textures.Append( texture );
+		}
+		// (the lists may have moved)
+		w.textures = build.textures.Ptr();
+		w.num_textures = build.textures.Num();
+	}
 
 	const int gathered = Sys_Milliseconds();
 	pt.backend->load_world( pt.backend, &w );
