@@ -47,8 +47,7 @@ and Ninja.
     build.bat
 
 The results go to `run/`: `Doom3.exe`, `base/gamex64.dll` and
-`d3xp/gamex64.dll`, with their `.pdb` files. `build.bat Release` builds
-without debug information.
+`d3xp/gamex64.dll`, with their `.pdb` files.
 
 ## Running
 
