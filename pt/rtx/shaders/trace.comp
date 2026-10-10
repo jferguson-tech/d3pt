@@ -15,6 +15,8 @@ layout(local_size_x = 8, local_size_y = 8) in;
 #include "scene.glsl"
 
 const float GLASS_INDEX = 1.5;
+const float PANE_THICKNESS = 2.0;	// of a pane of glass with no far face to be found
+const float PANE_REACH = 24.0;		// how far in a far face is looked for
 const int MAX_LAYERS = 8;	// see-through surfaces looked through before the next counts as solid
 
 // Light meeting the boundary between two clear materials: how much is
@@ -334,6 +336,35 @@ void main()
 				dir = normalize(dir * eta + surf.n * (eta * cosi - cost));
 				if (dot(dir, surf.ng) > 0.0)
 					dir = normalize(dir - surf.ng * (2.0 * dot(dir, surf.ng)));
+				tmin = 0.0;
+				entered = 0.0;
+				bent = true;
+			}
+			else if (!waves && (surf.mat.flags & MAT_REFRACT) != 0u && (fr.settings2.x & 1) != 0 && fresnel < 1.0)
+			{
+				// Into the pane, bent by the face as its bumps tilt it, and
+				// out of its far face, which is taken to be flat and to lie
+				// parallel to this one: see PT_MAT_REFRACT.
+				const float into = 1.0 / GLASS_INDEX;
+				vec3 inside = normalize(dir * into + surf.n * (into * cosi - cost));
+				if (dot(inside, surf.ng) > -0.05)
+					inside = normalize(inside - surf.ng * (dot(inside, surf.ng) + 0.05));
+				const vec3 from = surf.p - surf.ng * RAY_OFFSET;
+				const float steep = -dot(inside, surf.ng);
+				float thick = PANE_THICKNESS / max(steep, 0.2);
+				Hit far;
+				if (Nearest(from, inside, 0.0, PANE_REACH, MASK_ALL, true, far)
+						&& MaterialOf(far.moving, TriOf(far).material).alpha < 1.0)
+					thick = far.t;
+				float cos_out;
+				vec3 out_dir = dir;
+				if (Dielectric(steep, GLASS_INDEX, cos_out) < 1.0)
+					out_dir = normalize(inside * GLASS_INDEX + surf.ng * (GLASS_INDEX * steep - cos_out));
+				if (dot(out_dir, surf.ng) > 0.0)
+					out_dir = dir;
+				travelled += hit.t + thick;
+				origin = from + inside * thick;
+				dir = out_dir;
 				tmin = 0.0;
 				entered = 0.0;
 				bent = true;

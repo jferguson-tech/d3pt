@@ -16,6 +16,7 @@ const uint MAT_WAVES = 32u;
 const uint MAT_EMIT_BRIGHT = 64u;
 const uint MAT_EMIT_MAPPED = 4096u;
 const uint MAT_NO_SHADOW = 8192u;
+const uint MAT_REFRACT = 16384u;
 const uint MAT_WARP = 128u;
 const uint MAT_METAL_TEXTURE = 512u;
 const uint MAT_METAL_PAINTED = 1024u;
