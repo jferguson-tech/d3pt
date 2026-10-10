@@ -34,7 +34,7 @@ function(game_dll name src dir sources)
 	set_target_properties(${name} PROPERTIES OUTPUT_NAME gamex64 PREFIX ""
 		RUNTIME_OUTPUT_DIRECTORY ${RUN_DIR}/${dir}
 		ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${name}
-		PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${name})
+		PDB_OUTPUT_DIRECTORY ${RUN_DIR}/${dir})
 endfunction()
 
 game_dll(game game base "${GAME_SOURCES}")
@@ -46,5 +46,6 @@ target_include_directories(Doom3 PRIVATE neo/sound/OggVorbis/vorbissrc)
 target_link_libraries(Doom3 PRIVATE idlib
 	dbghelp dinput8 dsound dxguid glu32 iphlpapi opengl32 winmm ws2_32)
 target_link_options(Doom3 PRIVATE /STACK:16777216,16777216)
+# the .pdb files go beside the binaries, where the crash handler looks for them
 set_target_properties(Doom3 PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${RUN_DIR}
-	PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+	PDB_OUTPUT_DIRECTORY ${RUN_DIR})

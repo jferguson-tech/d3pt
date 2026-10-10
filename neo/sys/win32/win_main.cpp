@@ -373,6 +373,7 @@ Sys_Quit
 ==============
 */
 void Sys_Quit( void ) {
+	common->Printf( "TEMPTRACE Sys_Quit%c", 10 );
 	timeEndPeriod( 1 );
 	Sys_ShutdownInput();
 	Sys_DestroyConsole();
@@ -542,7 +543,7 @@ Sys_ListFiles
 int Sys_ListFiles( const char *directory, const char *extension, idStrList &list ) {
 	idStr		search;
 	struct _finddata_t findinfo;
-	int			findhandle;
+	intptr_t	findhandle;
 	int			flag;
 
 	if ( !extension) {
@@ -1366,7 +1367,11 @@ EXCEPTION_DISPOSITION __cdecl _except_handler( struct _EXCEPTION_RECORD *Excepti
 WinMain
 ==================
 */
+void Sys_InstallCrashHandler( void );
+
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow ) {
+
+	Sys_InstallCrashHandler();
 
 	const HCURSOR hcurSave = ::SetCursor( LoadCursor( 0, IDC_WAIT ) );
 

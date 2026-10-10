@@ -352,6 +352,10 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 		Sys_Printf( "idCommon::VPrintf: truncated to %d characters\n", strlen(msg)-1 );
 	}
 
+	{ // TEMPTRACE
+		static const char *tracePath = getenv( "D3PT_TRACE" );
+		if ( tracePath ) { FILE *tf = fopen( tracePath, "a" ); if ( tf ) { fputs( msg, tf ); fclose( tf ); } }
+	}
 	if ( rd_buffer ) {
 		if ( (int)( strlen( msg ) + strlen( rd_buffer ) ) > ( rd_buffersize - 1 ) ) {
 			rd_flush( rd_buffer );

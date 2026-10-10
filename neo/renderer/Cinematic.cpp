@@ -54,7 +54,7 @@ public:
 	virtual void			ResetTime(int time);
 
 private:
-	unsigned int			mcomp[256];
+	int						mcomp[256];						// signed: these are added to pointers
 	byte **					qStatus[2];
 	idStr					fileName;
 	int						CIN_WIDTH, CIN_HEIGHT;

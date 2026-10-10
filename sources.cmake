@@ -366,6 +366,7 @@ set(ENGINE_SOURCES
 	neo/sound/OggVorbis/oggsrc/framing.c
 	neo/sys/sys_local.cpp
 	neo/sys/win32/win_cpu_x64.cpp
+	neo/sys/win32/win_crash.cpp
 	neo/sys/win32/win_glimp.cpp
 	neo/sys/win32/win_input.cpp
 	neo/sys/win32/win_main.cpp
