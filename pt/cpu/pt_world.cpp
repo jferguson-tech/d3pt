@@ -151,7 +151,12 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 		for (size_t li = 0; li < w.lights.size(); li++)
 		{
 			const Vec3 d = w.lights[li].origin - centre;
-			scored[li] = {power[li] / std::max(Dot(d, d), min_dist2), (uint32_t)li};
+			float score = power[li] / std::max(Dot(d, d), min_dist2);
+			// a light that does not reach any of the cell is not one of its lights
+			const float far = w.lights[li].reach + std::sqrt(min_dist2);
+			if (w.lights[li].reach > 0.0f && Dot(d, d) > far * far)
+				score = 0.0f;
+			scored[li] = {score, (uint32_t)li};
 		}
 		const size_t keep = std::min((size_t)k, scored.size());
 		std::partial_sort(scored.begin(), scored.begin() + keep, scored.end(),
@@ -444,6 +449,7 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		l.pdf = 0;
 		l.style = in->lights[i].style;
 		l.dir = Vec3(in->lights[i].direction);
+		l.reach = in->lights[i].reach > 0.0f ? in->lights[i].reach : 0.0f;
 		l.cone_cos = in->lights[i].cone_cos;
 		const float p = Luminance(l.emission) * 4.0f * kPi;
 		if (p <= 0.0f)

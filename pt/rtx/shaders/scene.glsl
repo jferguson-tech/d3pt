@@ -15,6 +15,7 @@ const uint MAT_BLACK = 16u;
 const uint MAT_WAVES = 32u;
 const uint MAT_EMIT_BRIGHT = 64u;
 const uint MAT_EMIT_MAPPED = 4096u;
+const uint MAT_NO_SHADOW = 8192u;
 const uint MAT_WARP = 128u;
 const uint MAT_METAL_TEXTURE = 512u;
 const uint MAT_METAL_PAINTED = 1024u;
@@ -794,7 +795,7 @@ float Visible(vec3 p, vec3 target, bool bent, vec3 q)
 		}
 		const Tri tri = TriOf(hit);
 		const Material mat = MaterialOf(hit.moving, tri.material);
-		if (!IsHole(mat, tri, hit.bary) && (mat.alpha >= 1.0 || Rand() < mat.alpha))
+		if ((mat.flags & MAT_NO_SHADOW) == 0u && !IsHole(mat, tri, hit.bary) && (mat.alpha >= 1.0 || Rand() < mat.alpha))
 			return 0.0;
 		tmin = hit.t + 1.0e-4;
 	}
@@ -1524,6 +1525,15 @@ Lit DirectLights(Surface s, bool first_hit)
 		if (nol <= 0.0)
 			continue;
 		float geom = 1.0 / dist2;
+		if (!area && l.radius <= 0.0 && l.edge.x > 0.0)
+		{
+			// a point light of the map that only goes so far: see pt_point_light_t's reach
+			float w = dist2 / (l.edge.x * l.edge.x);
+			if (w >= 1.0)
+				continue;
+			w = 1.0 - w * w;
+			geom *= w * w;
+		}
 		if (area)
 		{
 			const float cosy = -dot(light_n, wi);
@@ -1830,6 +1840,15 @@ void DirectEveryLight(Surface s, out vec3 diffuse, out vec3 specular)
 		if (nol <= 0.0)
 			continue;
 		float geom = 1.0 / dist2;
+		if (!area && l.radius <= 0.0 && l.edge.x > 0.0)
+		{
+			// a point light of the map that only goes so far: see pt_point_light_t's reach
+			float w = dist2 / (l.edge.x * l.edge.x);
+			if (w >= 1.0)
+				continue;
+			w = 1.0 - w * w;
+			geom *= w * w;
+		}
 		if (area)
 		{
 			const float cosy = -dot(light_n, wi);

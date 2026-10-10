@@ -61,7 +61,7 @@ idCVar r_ptScale( "r_ptScale", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE,
 idCVar r_ptSamples( "r_ptSamples", "1", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: paths per pixel per frame" );
 idCVar r_ptBounces( "r_ptBounces", "3", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: bounces after the first surface" );
 idCVar r_ptExposure( "r_ptExposure", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: exposure" );
-idCVar r_ptAutoExposure( "r_ptAutoExposure", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: adapt the exposure to the scene" );
+idCVar r_ptAutoExposure( "r_ptAutoExposure", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: adapt the exposure to the scene" );
 idCVar r_ptLightScale( "r_ptLightScale", "2", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright a light is for its colour and size; needs reloadPathTrace" );
 idCVar r_ptDenoise( "r_ptDenoise", "4", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: passes of the spatial filter, 0-4" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
@@ -101,6 +101,7 @@ typedef struct {
 	idList<const idImage *>		images;			// of each texture
 	idList<pt_material_t>		materials;
 	idList<const idMaterial *>	shaders;		// of each material
+	idList<bool>				noShadows;		// and whether it is for a model that casts no shadow
 	idList<float>				positions;
 	idList<float>				uvs;
 	idList<unsigned int>		indices;
@@ -258,7 +259,7 @@ PT_MaterialFor
 Returns the index in the build's materials, or -1 for a surface that is not traced.
 ================
 */
-static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader ) {
+static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool noShadow ) {
 	int					i;
 	const shaderStage_t	*diffuse = NULL;
 	const shaderStage_t	*unlit = NULL;
@@ -267,8 +268,13 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader ) {
 	if ( !shader || !shader->IsDrawn() || shader->Coverage() == MC_TRANSLUCENT ) {
 		return -1;
 	}
+	// The game's lamps sit inside their fittings, which it tells not to cast
+	// shadows. Here that has to be said of the material.
+	if ( !shader->SurfaceCastsShadow() ) {
+		noShadow = true;
+	}
 	for ( i = 0; i < build.shaders.Num(); i++ ) {
-		if ( build.shaders[i] == shader ) {
+		if ( build.shaders[i] == shader && build.noShadows[i] == noShadow ) {
 			return i;
 		}
 	}
@@ -294,6 +300,9 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader ) {
 	if ( shader->Coverage() == MC_PERFORATED ) {
 		material.flags |= PT_MAT_ALPHA_TEST;
 	}
+	if ( noShadow ) {
+		material.flags |= PT_MAT_NO_SHADOW;
+	}
 	if ( diffuse ) {
 		material.texture = PT_TextureFor( build, diffuse->texture.image );
 	} else if ( unlit ) {
@@ -304,6 +313,7 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader ) {
 	}
 
 	build.shaders.Append( shader );
+	build.noShadows.Append( noShadow );
 	return build.materials.Append( material );
 }
 
@@ -324,7 +334,7 @@ static void PT_AddModel( ptWorldBuild_t &build, const idRenderEntityLocal *def )
 			continue;
 		}
 		const idMaterial *shader = R_RemapShaderBySkin( surf->shader, def->parms.customSkin, def->parms.customShader );
-		int material = PT_MaterialFor( build, shader );
+		int material = PT_MaterialFor( build, shader, def->parms.noShadow );
 		if ( material < 0 ) {
 			continue;
 		}
@@ -354,8 +364,9 @@ PT_AddLight
 
 A light of the game is a box or a pyramid that it fills, brightest in the
 middle and dark at the edge. The tracer's is a point whose light thins with
-the square of the distance. It is given the brightness that puts about the
-same light half way out.
+the square of the distance, and is told to reach as far as the game's does
+and no further. It is given the brightness that puts about the same light
+half way out.
 ================
 */
 static void PT_AddLight( ptWorldBuild_t &build, const idRenderLightLocal *def ) {
@@ -369,7 +380,7 @@ static void PT_AddLight( ptWorldBuild_t &build, const idRenderLightLocal *def ) 
 
 	memset( &light, 0, sizeof( light ) );
 	if ( parms.pointLight ) {
-		reach = ( parms.lightRadius.x + parms.lightRadius.y + parms.lightRadius.z ) * ( 1.0f / 3.0f );
+		reach = Max( parms.lightRadius.x, Max( parms.lightRadius.y, parms.lightRadius.z ) );
 		light.origin[0] = def->globalLightOrigin.x;
 		light.origin[1] = def->globalLightOrigin.y;
 		light.origin[2] = def->globalLightOrigin.z;
@@ -381,7 +392,7 @@ static void PT_AddLight( ptWorldBuild_t &build, const idRenderLightLocal *def ) 
 		if ( length <= 0.0f ) {
 			return;
 		}
-		reach = length;
+		reach = parms.end.LengthSqr() > 0.0f ? parms.end.Length() : length;
 		light.origin[0] = parms.origin.x;
 		light.origin[1] = parms.origin.y;
 		light.origin[2] = parms.origin.z;
@@ -393,6 +404,8 @@ static void PT_AddLight( ptWorldBuild_t &build, const idRenderLightLocal *def ) 
 	if ( reach <= 0.0f ) {
 		return;
 	}
+
+	light.reach = reach;
 
 	const float scale = r_ptLightScale.GetFloat() * reach * reach;
 	light.intensity[0] = parms.shaderParms[SHADERPARM_RED] * scale;

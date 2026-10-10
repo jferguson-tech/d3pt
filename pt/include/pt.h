@@ -70,6 +70,11 @@ vertices appear counter clockwise.
 									   light in lights, so a path that comes upon it
 									   counts its glow only where lights are not looked
 									   for: from the eye and in a sharp reflection */
+#define PT_MAT_NO_SHADOW			8192u	/* casts no shadow: light on its way from a light
+									   passes it as if it were not there. It is seen
+									   and lit as anything else is. For a lamp's own
+									   housing, where the lamp is given as a point
+									   inside it */
 #define PT_MAT_EMIT_MAPPED		4096u	/* emission_texture says where on the surface the
 									   material's light comes from, and stands for
 									   texture in all that is said of emission: a
@@ -150,6 +155,13 @@ typedef struct pt_point_light_s
 	float		direction[3];	/* world only: a spotlight shines along this (unit) ... */
 	float		cone_cos;		/* ... within the cone with this cosine of its half
 								   angle; 0 = shines all round */
+	float		reach;			/* world only: above 0 the light goes no further than
+								   this. It thins with the square of the distance d
+								   and is also times (1 - (d / reach)^4)^2, which is
+								   1 near the light and falls to nothing at reach.
+								   For a light an engine draws as a lit volume of a
+								   set size, which would otherwise be seen across
+								   the map. 0 = no end */
 	float		radius;			/* scene only: above 0 the light is a ball of this
 								   size, as bright all over, which gives off the
 								   same light in all as the point would: its

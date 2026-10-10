@@ -2154,6 +2154,7 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 				out.origin[a] = l.origin[a];
 				out.dir[a] = l.dir[a];
 			}
+			out.edge[0] = l.reach;		// a point has no edge: its place holds how far it reaches
 		}
 		else
 		{
