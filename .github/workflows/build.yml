@@ -1,0 +1,27 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The job only reads the code; the token it gets cannot push or edit anything.
+permissions:
+  contents: read
+
+jobs:
+  # The engine and both game libraries. Nothing is run: that needs the game's
+  # data, which is not in this repository.
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        shell: cmd
+        run: build.bat RelWithDebInfo
+      - name: Check that everything was built
+        shell: bash
+        run: |
+          for f in run/Doom3.exe run/base/gamex64.dll run/d3xp/gamex64.dll; do
+            test -f "$f" || { echo "::error::missing $f"; exit 1; }
+          done
