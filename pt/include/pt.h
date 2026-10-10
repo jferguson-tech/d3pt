@@ -152,16 +152,22 @@ typedef struct pt_point_light_s
 	float		origin[3];
 	float		intensity[3];	/* radiant intensity; irradiance is this * cos / d^2 */
 	int			style;			/* world only: index into the view's light_styles */
-	float		direction[3];	/* world only: a spotlight shines along this (unit) ... */
+	float		direction[3];	/* a spotlight shines along this (unit) ... */
 	float		cone_cos;		/* ... within the cone with this cosine of its half
 								   angle; 0 = shines all round */
-	float		reach;			/* world only: above 0 the light goes no further than
+	float		reach;			/* points, not balls: above 0 the light goes no further than
 								   this. It thins with the square of the distance d
 								   and is also times (1 - (d / reach)^4)^2, which is
 								   1 near the light and falls to nothing at reach.
 								   For a light an engine draws as a lit volume of a
 								   set size, which would otherwise be seen across
 								   the map. 0 = no end */
+	float		core;			/* points, not balls: above 0, nothing nearer the
+								   light than this is lit more brightly than what
+								   is this far from it: the distance d is taken as
+								   no less than core. For a light an engine draws
+								   no brighter close to than its colour, which as
+								   a true point would burn out all that is near it */
 	float		radius;			/* scene only: above 0 the light is a ball of this
 								   size, as bright all over, which gives off the
 								   same light in all as the point would: its
@@ -302,6 +308,15 @@ typedef struct pt_view_s
 
 	const float	*light_styles;			/* brightness of each world light style, 1 = normal */
 	int			num_light_styles;
+	const float	*light_scales;			/* 3 for each of the lights load_world was given, in
+										   that order: the light's intensity is times this,
+										   red, green and blue, this frame. For lights that
+										   flicker, change colour or are switched, where
+										   there are more of them than light styles. A light
+										   is looked for as often as its intensity at
+										   load_world earned it, so one that may come on
+										   should not be given as dark. NULL = all 1 */
+	int			num_light_scales;		/* lights, not floats */
 	int			anim_frame;				/* which step animated materials are on */
 	float		medium_absorb[3];		/* the eye is inside a liquid that absorbs this much */
 	float		sky_axis[3];			/* the sky turns about this (unit) axis ... */

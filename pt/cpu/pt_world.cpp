@@ -450,6 +450,8 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		l.style = in->lights[i].style;
 		l.dir = Vec3(in->lights[i].direction);
 		l.reach = in->lights[i].reach > 0.0f ? in->lights[i].reach : 0.0f;
+		l.core = in->lights[i].core > 0.0f ? in->lights[i].core : 0.0f;
+		l.given = i;
 		l.cone_cos = in->lights[i].cone_cos;
 		const float p = Luminance(l.emission) * 4.0f * kPi;
 		if (p <= 0.0f)

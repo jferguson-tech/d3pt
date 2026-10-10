@@ -136,7 +136,9 @@ struct Light
 	Vec3		dir;		// spotlights: where it points
 	float		cone_cos;	// and how wide; 0 = all round
 	float		radius = 0.0f;	// the frame's: above 0 a ball of light, not a point
-	float		reach = 0.0f;	// the map's points: above 0, how far the light goes
+	float		reach = 0.0f;	// points: above 0, how far the light goes
+	float		core = 0.0f;	// points: above 0, the least distance it is taken to be at
+	int			given = -1;		// the map's points: which of the lights load_world was given
 };
 
 // For each cell of a coarse grid, the lights that matter most there. Sampling
