@@ -161,7 +161,12 @@ typedef struct pt_point_light_s
 								   1 near the light and falls to nothing at reach.
 								   For a light an engine draws as a lit volume of a
 								   set size, which would otherwise be seen across
-								   the map. 0 = no end */
+								   the map. 0 = no end. One of the map's with a
+								   reach is looked for only from the parts of the
+								   map it reaches, and there the most it is weighed
+								   among is the 24 that put most light on that
+								   part: what is hidden from all of a part's
+								   surfaces counts for little */
 	float		core;			/* points, not balls: above 0, nothing nearer the
 								   light than this is lit more brightly than what
 								   is this far from it: the distance d is taken as

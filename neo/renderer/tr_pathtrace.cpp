@@ -76,6 +76,9 @@ idCVar r_ptAutoExposure( "r_ptAutoExposure", "0", CVAR_RENDERER | CVAR_BOOL | CV
 idCVar r_ptLightScale( "r_ptLightScale", "2", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright a light is for its colour and size" );
 idCVar r_ptDenoise( "r_ptDenoise", "4", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: passes of the spatial filter, 0-4" );
 idCVar r_ptEntities( "r_ptEntities", "1", CVAR_RENDERER | CVAR_BOOL, "path tracer: trace the models of entities: monsters, doors, the weapon and all else that is not the map itself" );
+idCVar r_ptLightSamples( "r_ptLightSamples", "8", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: lights weighed at each point before one is chosen, up to 64" );
+idCVar r_ptFireflyClamp( "r_ptFireflyClamp", "16", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: the brightest a single bounced sample may be" );
+idCVar r_ptGlow( "r_ptGlow", "0.1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much light a surface the game draws unlit gives off, for a white texel; it is shown as painted whatever this is; needs reloadPathTrace" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
 
 // OpenGL's side of opening the tracer's picture (GL_EXT_memory_object, GL_EXT_memory_object_win32)
@@ -396,7 +399,7 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool
 	if ( glows ) {
 		// not lit by the game's lights: it shows as it is painted, so it glows
 		material.flags |= PT_MAT_EMIT_TEXTURE;
-		material.emission[0] = material.emission[1] = material.emission[2] = 0.5f;
+		material.emission[0] = material.emission[1] = material.emission[2] = r_ptGlow.GetFloat(); material.emission_seen = 1.0f;
 	}
 
 	build.shaders.Append( shader );
@@ -673,8 +676,8 @@ static void PT_FrameLights( const viewDef_t *viewDef ) {
 			if ( ( def->globalLightOrigin - eye ).Length() > reach ) {
 				continue;
 			}
-			common->Printf( "%4i %-18s %s colour %.2f %.2f %.2f reach %.0f%s %s\n", i, kind, def->parms.pointLight ? "point" : "cone ",
-							colour.x, colour.y, colour.z, reach, def->parms.noShadows ? " noshadows" : "", shader ? shader->GetName() : "" );
+			common->Printf( "%4i %-18s %s colour %.2f %.2f %.2f reach %.0f, %.0f away%s %s\n", i, kind, def->parms.pointLight ? "point" : "cone ",
+							colour.x, colour.y, colour.z, reach, ( def->globalLightOrigin - eye ).Length(), def->parms.noShadows ? " noshadows" : "", shader ? shader->GetName() : "" );
 		}
 		common->Printf( "path tracer: %d lights in the world: %d the map's, %d the frame's (of %d found), %d lit, %d left out\n",
 						world->lightDefs.Num(), pt.worldLights.Num(), pt.frameLights.Num(), found.Num(), lit, left );
@@ -1014,7 +1017,7 @@ static void PT_MovingMaterials( void ) {
 		if ( glows ) {
 			// not lit by the game's lights: it shows as it is painted, so it glows
 			material.flags |= PT_MAT_EMIT_TEXTURE;
-			material.emission[0] = material.emission[1] = material.emission[2] = 0.5f;
+			material.emission[0] = material.emission[1] = material.emission[2] = r_ptGlow.GetFloat(); material.emission_seen = 1.0f;
 		}
 		pt.movingMaterials.Append( material );
 	}
@@ -1124,8 +1127,8 @@ bool PT_DrawView( void ) {
 	view.view_mode = r_ptView.GetInteger();
 	view.reflections = 2;
 	view.reflection_rate = 1.0f;
-	view.light_samples = 8;
-	view.firefly_clamp = 16.0f;
+	view.light_samples = r_ptLightSamples.GetInteger();
+	view.firefly_clamp = r_ptFireflyClamp.GetFloat();
 	view.texture_filter = 1;
 	view.denoise = r_ptDenoise.GetInteger();
 	view.history = 8;
