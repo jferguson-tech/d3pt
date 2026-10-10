@@ -1167,6 +1167,7 @@ void Win_Frame( void ) {
 	}
 }
 
+#ifndef _WIN64
 extern "C" { void _chkstk( int size ); };
 void clrstk( void );
 
@@ -1194,6 +1195,7 @@ void HackChkStk( void ) {
 
 	TestChkStk();
 }
+#endif
 
 /*
 ====================
@@ -1276,6 +1278,7 @@ void EmailCrashReport( LPSTR messageText ) {
 	}
 }
 
+#ifndef _WIN64
 int Sys_FPU_PrintStateFlags( char *ptr, int ctrl, int stat, int tags, int inof, int inse, int opof, int opse );
 
 /*
@@ -1348,6 +1351,7 @@ EXCEPTION_DISPOSITION __cdecl _except_handler( struct _EXCEPTION_RECORD *Excepti
     // Tell the OS to restart the faulting instruction
     return ExceptionContinueExecution;
 }
+#endif
 
 #define TEST_FPU_EXCEPTIONS	/*	FPU_EXCEPTION_INVALID_OPERATION |		*/	\
 							/*	FPU_EXCEPTION_DENORMALIZED_OPERAND |	*/	\
@@ -1410,7 +1414,7 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	common->Printf( Sys_FPU_GetState() );
 #endif
 
-#ifndef	ID_DEDICATED
+#if !defined( ID_DEDICATED ) && defined( ID_ALLOW_TOOLS )	// the hook is written with MFC
 	if ( win32.win_notaskkeys.GetInteger() ) {
 		DisableTaskKeys( TRUE, FALSE, /*( win32.win_notaskkeys.GetInteger() == 2 )*/ FALSE );
 	}
@@ -1505,6 +1509,7 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	return 0;
 }
 
+#ifndef _WIN64
 /*
 ====================
 clrstk
@@ -1540,6 +1545,7 @@ __declspec( naked ) void clrstk( void ) {
         ret
 	}
 }
+#endif
 
 /*
 ==================

@@ -41,10 +41,22 @@ If you have questions concerning this license or the applicable additional terms
 // Win32
 #if defined(WIN32) || defined(_WIN32)
 
+// inline assembly is only taken by the 32-bit compiler
+#ifndef _WIN64
+#define ID_WIN_X86_ASM
+#endif
+
+#ifdef _WIN64
+#define	BUILD_STRING					"win-x64"
+#define BUILD_OS_ID						0
+#define	CPUSTRING						"x64"
+#define CPU_EASYARGS					0
+#else
 #define	BUILD_STRING					"win-x86"
 #define BUILD_OS_ID						0
 #define	CPUSTRING						"x86"
 #define CPU_EASYARGS					1
+#endif
 
 #define ALIGN16( x )					__declspec(align(16)) x
 #define PACKED

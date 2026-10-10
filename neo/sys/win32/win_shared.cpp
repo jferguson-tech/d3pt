@@ -40,11 +40,10 @@ If you have questions concerning this license or the applicable additional terms
 #include <conio.h>
 
 #ifndef	ID_DEDICATED
-#include <comdef.h>
-#include <comutil.h>
-#include <Wbemidl.h>
+#include <dxgi.h>
 
-#pragma comment (lib, "wbemuuid.lib")
+#pragma comment (lib, "dxgi.lib")
+#pragma comment (lib, "dxguid.lib")
 #endif
 
 /*
@@ -113,50 +112,24 @@ int Sys_GetVideoRam( void ) {
 #ifdef	ID_DEDICATED
 	return 0;
 #else
+	// ask DXGI for the card with the most memory of its own: the WMI query
+	// that was here needed ATL, and its 32-bit answer wraps at 4 GB
 	unsigned int retSize = 64;
+	IDXGIFactory *factory = NULL;
 
-	CComPtr<IWbemLocator> spLoc = NULL;
-	HRESULT hr = CoCreateInstance( CLSID_WbemLocator, 0, CLSCTX_SERVER, IID_IWbemLocator, ( LPVOID * ) &spLoc );
-	if ( hr != S_OK || spLoc == NULL ) {
-		return retSize;
-	}
-
-	CComBSTR bstrNamespace( _T( "\\\\.\\root\\CIMV2" ) );
-	CComPtr<IWbemServices> spServices;
-
-	// Connect to CIM
-	hr = spLoc->ConnectServer( bstrNamespace, NULL, NULL, 0, NULL, 0, 0, &spServices );
-	if ( hr != WBEM_S_NO_ERROR ) {
-		return retSize;
-	}
-
-	// Switch the security level to IMPERSONATE so that provider will grant access to system-level objects.  
-	hr = CoSetProxyBlanket( spServices, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE );
-	if ( hr != S_OK ) {
-		return retSize;
-	}
-
-	// Get the vid controller
-	CComPtr<IEnumWbemClassObject> spEnumInst = NULL;
-	hr = spServices->CreateInstanceEnum( CComBSTR( "Win32_VideoController" ), WBEM_FLAG_SHALLOW, NULL, &spEnumInst ); 
-	if ( hr != WBEM_S_NO_ERROR || spEnumInst == NULL ) {
-		return retSize;
-	}
-
-	ULONG uNumOfInstances = 0;
-	CComPtr<IWbemClassObject> spInstance = NULL;
-	hr = spEnumInst->Next( 10000, 1, &spInstance, &uNumOfInstances );
-
-	if ( hr == S_OK && spInstance ) {
-		// Get properties from the object
-		CComVariant varSize;
-		hr = spInstance->Get( CComBSTR( _T( "AdapterRAM" ) ), 0, &varSize, 0, 0 );
-		if ( hr == S_OK ) {
-			retSize = varSize.intVal / ( 1024 * 1024 );
-			if ( retSize == 0 ) {
-				retSize = 64;
+	if ( SUCCEEDED( CreateDXGIFactory( IID_IDXGIFactory, (void **)&factory ) ) ) {
+		IDXGIAdapter *adapter = NULL;
+		for ( UINT i = 0; factory->EnumAdapters( i, &adapter ) == S_OK; i++ ) {
+			DXGI_ADAPTER_DESC desc;
+			if ( SUCCEEDED( adapter->GetDesc( &desc ) ) ) {
+				unsigned int megs = (unsigned int)( desc.DedicatedVideoMemory >> 20 );
+				if ( megs > retSize ) {
+					retSize = megs;
+				}
 			}
+			adapter->Release();
 		}
+		factory->Release();
 	}
 	return retSize;
 #endif
@@ -663,6 +636,7 @@ address_t GetFuncAddr( address_t midPtPtr ) {
 GetCallerAddr
 ==================
 */
+#ifndef _WIN64
 address_t GetCallerAddr( long _ebp ) {
 	long midPtPtr;
 	long res = 0;
@@ -682,6 +656,8 @@ label:
 	return res;
 }
 
+#endif
+
 /*
 ==================
 Sys_GetCallStack
@@ -690,7 +666,7 @@ Sys_GetCallStack
 ==================
 */
 void Sys_GetCallStack( address_t *callStack, const int callStackSize ) {
-#if 1 //def _DEBUG
+#ifndef _WIN64
 	int i;
 	long m_ebp;
 
