@@ -38,12 +38,12 @@ idTypeDef	type_namespace( ev_namespace, &def_namespace, "namespace", sizeof( voi
 idTypeDef	type_string( ev_string, &def_string, "string", MAX_STRING_LEN, NULL );
 idTypeDef	type_float( ev_float, &def_float, "float", sizeof( float ), NULL );
 idTypeDef	type_vector( ev_vector, &def_vector, "vector", sizeof( idVec3 ), NULL );
-idTypeDef	type_entity( ev_entity, &def_entity, "entity", sizeof( int * ), NULL );					// stored as entity number pointer
+idTypeDef	type_entity( ev_entity, &def_entity, "entity", sizeof( int ), NULL );					// stored as an entity number, which the interpreter pushes as an int
 idTypeDef	type_field( ev_field, &def_field, "field", sizeof( void * ), NULL );
 idTypeDef	type_function( ev_function, &def_function, "function", sizeof( void * ), &type_void );
 idTypeDef	type_virtualfunction( ev_virtualfunction, &def_virtualfunction, "virtual function", sizeof( int ), NULL );
 idTypeDef	type_pointer( ev_pointer, &def_pointer, "pointer", sizeof( void * ), NULL );
-idTypeDef	type_object( ev_object, &def_object, "object", sizeof( int * ), NULL );					// stored as entity number pointer
+idTypeDef	type_object( ev_object, &def_object, "object", sizeof( int ), NULL );					// stored as an entity number, which the interpreter pushes as an int
 idTypeDef	type_jumpoffset( ev_jumpoffset, &def_jumpoffset, "<jump>", sizeof( int ), NULL );		// only used for jump opcodes
 idTypeDef	type_argsize( ev_argsize, &def_argsize, "<argsize>", sizeof( int ), NULL );				// only used for function call and thread opcodes
 idTypeDef	type_boolean( ev_boolean, &def_boolean, "boolean", sizeof( int ), NULL );
@@ -931,7 +931,9 @@ void idScriptObject::Restore( idRestoreGame *savefile ) {
 		savefile->Error( "idScriptObject::Restore: failed to restore object of type '%s'.", typeName.c_str() );
 	}
 
-	savefile->ReadInt( (int &)size );
+	int savedSize;		// a size_t is wider than the int in the file
+	savefile->ReadInt( savedSize );
+	size = savedSize;
 	if ( size != type->Size() ) {
 		savefile->Error( "idScriptObject::Restore: size of object '%s' doesn't match size in save game.", typeName.c_str() );
 	}
@@ -1307,7 +1309,11 @@ idVarDef *idProgram::AllocDef( idTypeDef *type, const char *name, idVarDef *scop
 		def->value.stackOffset	= scope->value.functionPtr->locals;
 		def->initialized		= idVarDef::stackVariable;
 
-		if ( type->Inherits( &type_object ) ) {
+		if ( !strcmp( name, RESULT_STRING ) && type->Size() < sizeof( void * ) ) {
+			// the compiler turns the result of a field access into a pointer to the field,
+			// in the same place, so a result is never smaller than a pointer
+			scope->value.functionPtr->locals += sizeof( void * );
+		} else if ( type->Inherits( &type_object ) ) {
 			// objects only have their entity number on the stack, not the entire object
 			scope->value.functionPtr->locals += type_object.Size();
 		} else {
@@ -1319,6 +1325,10 @@ idVarDef *idProgram::AllocDef( idTypeDef *type, const char *name, idVarDef *scop
 		//
 		def->value.bytePtr = &variables[ numVariables ];
 		numVariables += def->TypeDef()->Size();
+		if ( !strcmp( name, RESULT_STRING ) && def->TypeDef()->Size() < sizeof( void * ) ) {
+			// as for results on the stack: room for a pointer
+			numVariables += sizeof( void * ) - def->TypeDef()->Size();
+		}
 		if ( numVariables > sizeof( variables ) ) {
 			throw idCompileError( va( "Exceeded global memory size (%d bytes)", sizeof( variables ) ) );
 		}

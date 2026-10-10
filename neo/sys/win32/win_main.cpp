@@ -97,7 +97,7 @@ void Sys_CreateThread(  xthread_t function, void *parms, xthreadPriority priorit
 									parms,	// LPVOID lpvThreadParm,
 									0,		//   DWORD fdwCreate,
 									&info.threadId);
-	info.threadHandle = (int) temp;
+	info.threadHandle = (intptr_t) temp;
 	if (priority == THREAD_HIGHEST) {
 		SetThreadPriority( (HANDLE)info.threadHandle, THREAD_PRIORITY_HIGHEST );		//  we better sleep enough to do this
 	} else if (priority == THREAD_ABOVE_NORMAL ) {
@@ -542,7 +542,7 @@ Sys_ListFiles
 int Sys_ListFiles( const char *directory, const char *extension, idStrList &list ) {
 	idStr		search;
 	struct _finddata_t findinfo;
-	int			findhandle;
+	intptr_t	findhandle;
 	int			flag;
 
 	if ( !extension) {
@@ -655,7 +655,7 @@ DLL Loading
 Sys_DLL_Load
 =====================
 */
-int Sys_DLL_Load( const char *dllName ) {
+intptr_t Sys_DLL_Load( const char *dllName ) {
 	HINSTANCE	libHandle;
 	libHandle = LoadLibrary( dllName );
 	if ( libHandle ) {
@@ -664,11 +664,11 @@ int Sys_DLL_Load( const char *dllName ) {
 		GetModuleFileName( libHandle, loadedPath, sizeof( loadedPath ) - 1 );
 		if ( idStr::IcmpPath( dllName, loadedPath ) ) {
 			Sys_Printf( "ERROR: LoadLibrary '%s' wants to load '%s'\n", dllName, loadedPath );
-			Sys_DLL_Unload( (int)libHandle );
+			Sys_DLL_Unload( (intptr_t)libHandle );
 			return 0;
 		}
 	}
-	return (int)libHandle;
+	return (intptr_t)libHandle;
 }
 
 /*
@@ -676,7 +676,7 @@ int Sys_DLL_Load( const char *dllName ) {
 Sys_DLL_GetProcAddress
 =====================
 */
-void *Sys_DLL_GetProcAddress( int dllHandle, const char *procName ) {
+void *Sys_DLL_GetProcAddress( intptr_t dllHandle, const char *procName ) {
 	return GetProcAddress( (HINSTANCE)dllHandle, procName ); 
 }
 
@@ -685,7 +685,7 @@ void *Sys_DLL_GetProcAddress( int dllHandle, const char *procName ) {
 Sys_DLL_Unload
 =====================
 */
-void Sys_DLL_Unload( int dllHandle ) {
+void Sys_DLL_Unload( intptr_t dllHandle ) {
 	if ( !dllHandle ) {
 		return;
 	}
@@ -1167,6 +1167,7 @@ void Win_Frame( void ) {
 	}
 }
 
+#ifndef _WIN64
 extern "C" { void _chkstk( int size ); };
 void clrstk( void );
 
@@ -1194,6 +1195,7 @@ void HackChkStk( void ) {
 
 	TestChkStk();
 }
+#endif
 
 /*
 ====================
@@ -1276,6 +1278,7 @@ void EmailCrashReport( LPSTR messageText ) {
 	}
 }
 
+#ifndef _WIN64
 int Sys_FPU_PrintStateFlags( char *ptr, int ctrl, int stat, int tags, int inof, int inse, int opof, int opse );
 
 /*
@@ -1348,6 +1351,7 @@ EXCEPTION_DISPOSITION __cdecl _except_handler( struct _EXCEPTION_RECORD *Excepti
     // Tell the OS to restart the faulting instruction
     return ExceptionContinueExecution;
 }
+#endif
 
 #define TEST_FPU_EXCEPTIONS	/*	FPU_EXCEPTION_INVALID_OPERATION |		*/	\
 							/*	FPU_EXCEPTION_DENORMALIZED_OPERAND |	*/	\
@@ -1362,7 +1366,11 @@ EXCEPTION_DISPOSITION __cdecl _except_handler( struct _EXCEPTION_RECORD *Excepti
 WinMain
 ==================
 */
+void Sys_InstallCrashHandler( void );
+
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow ) {
+
+	Sys_InstallCrashHandler();
 
 	const HCURSOR hcurSave = ::SetCursor( LoadCursor( 0, IDC_WAIT ) );
 
@@ -1410,7 +1418,7 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	common->Printf( Sys_FPU_GetState() );
 #endif
 
-#ifndef	ID_DEDICATED
+#if !defined( ID_DEDICATED ) && defined( ID_ALLOW_TOOLS )	// the hook is written with MFC
 	if ( win32.win_notaskkeys.GetInteger() ) {
 		DisableTaskKeys( TRUE, FALSE, /*( win32.win_notaskkeys.GetInteger() == 2 )*/ FALSE );
 	}
@@ -1505,6 +1513,7 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	return 0;
 }
 
+#ifndef _WIN64
 /*
 ====================
 clrstk
@@ -1540,6 +1549,7 @@ __declspec( naked ) void clrstk( void ) {
         ret
 	}
 }
+#endif
 
 /*
 ==================

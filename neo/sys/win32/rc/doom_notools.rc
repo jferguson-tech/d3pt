@@ -1,0 +1,5 @@
+// the resources of a build without the editors: the icon alone
+
+#include "doom_resource.h"
+
+IDI_ICON1               ICON                    "res\\doom.ico"

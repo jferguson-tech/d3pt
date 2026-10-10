@@ -54,7 +54,7 @@ public:
 	virtual void			ResetTime(int time);
 
 private:
-	unsigned int			mcomp[256];
+	int						mcomp[256];						// signed: these are added to pointers
 	byte **					qStatus[2];
 	idStr					fileName;
 	int						CIN_WIDTH, CIN_HEIGHT;
@@ -1243,8 +1243,9 @@ void idCinematicLocal::readQuadInfo( byte *qData ) {
 	half = false;
 	smootheddouble = false;
 	
-	t[0] = (0 - (unsigned int)image)+(unsigned int)image+screenDelta;
-	t[1] = (0 - ((unsigned int)image + screenDelta))+(unsigned int)image;
+	// the address of the image was added and taken away again, in 32 bits
+	t[0] = screenDelta;
+	t[1] = -screenDelta;
 
 	drawX = CIN_WIDTH;
 	drawY = CIN_HEIGHT;

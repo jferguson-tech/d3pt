@@ -73,6 +73,10 @@ void idSIMD::InitProcessor( const char *module, bool forceGeneric ) {
 	} else {
 
 		if ( !processor ) {
+#if defined( _WIN32 ) && !defined( ID_WIN_X86_ASM )
+			// the other processors are written in inline assembly
+			processor = generic;
+#else
 			if ( ( cpuid & CPUID_ALTIVEC ) ) {
 				processor = new idSIMD_AltiVec;
 			} else if ( ( cpuid & CPUID_MMX ) && ( cpuid & CPUID_SSE ) && ( cpuid & CPUID_SSE2 ) && ( cpuid & CPUID_SSE3 ) ) {
@@ -88,6 +92,7 @@ void idSIMD::InitProcessor( const char *module, bool forceGeneric ) {
 			} else {
 				processor = generic;
 			}
+#endif
 			processor->cpuid = cpuid;
 		}
 
@@ -141,7 +146,16 @@ idSIMDProcessor *p_simd;
 idSIMDProcessor *p_generic;
 long baseClocks = 0;
 
-#ifdef _WIN32
+#if defined( _WIN32 ) && !defined( ID_WIN_X86_ASM )
+
+#include <intrin.h>
+
+#define TIME_TYPE int
+
+#define StartRecordTime( start )			start = (int) __rdtsc();
+#define StopRecordTime( end )				end = (int) __rdtsc();
+
+#elif defined( _WIN32 )
 
 #define TIME_TYPE int
 
@@ -1498,7 +1512,7 @@ void TestMemcpy( void ) {
 		p_simd->Memcpy( test1, test0, 8192 );
 		for ( j = 0; j < i; j++ ) {
 			if ( test1[j] != test0[j] ) {
-				idLib::common->Printf( "   simd->Memcpy() "S_COLOR_RED"X\n" );
+				idLib::common->Printf( "   simd->Memcpy() " S_COLOR_RED"X\n" );
 				return;
 			}
 		}
@@ -1524,7 +1538,7 @@ void TestMemset( void ) {
 			p_simd->Memset( test, j, i );
 			for ( k = 0; k < i; k++ ) {
 				if ( test[k] != (byte)j ) {
-					idLib::common->Printf( "   simd->Memset() "S_COLOR_RED"X\n" );
+					idLib::common->Printf( "   simd->Memset() " S_COLOR_RED"X\n" );
 					return;
 				}
 			}
@@ -4114,6 +4128,10 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 
 		argString.Replace( " ", "" );
 
+#if defined( _WIN32 ) && !defined( ID_WIN_X86_ASM )
+		common->Printf( "this build has only the generic processor\n" );
+		return;
+#else
 		if ( idStr::Icmp( argString, "MMX" ) == 0 ) {
 			if ( !( cpuid & CPUID_MMX ) ) {
 				common->Printf( "CPU does not support MMX\n" );
@@ -4154,6 +4172,7 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 			common->Printf( "invalid argument, use: MMX, 3DNow, SSE, SSE2, SSE3, AltiVec\n" );
 			return;
 		}
+#endif
 	}
 
 	idLib::common->SetRefreshOnPrint( true );

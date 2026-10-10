@@ -29,6 +29,10 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __MATH_MATH_H__
 #define __MATH_MATH_H__
 
+#ifdef _WIN64
+#include <xmmintrin.h>
+#endif
+
 #ifdef MACOS_X
 // for square root estimate instruction
 #include <ppc_intrinsics.h>
@@ -386,7 +390,7 @@ ID_INLINE double idMath::Cos64( float a ) {
 }
 
 ID_INLINE void idMath::SinCos( float a, float &s, float &c ) {
-#ifdef _WIN32
+#ifdef ID_WIN_X86_ASM
 	_asm {
 		fld		a
 		fsincos
@@ -439,7 +443,7 @@ ID_INLINE void idMath::SinCos16( float a, float &s, float &c ) {
 }
 
 ID_INLINE void idMath::SinCos64( float a, double &s, double &c ) {
-#ifdef _WIN32
+#ifdef ID_WIN_X86_ASM
 	_asm {
 		fld		a
 		fsincos
@@ -797,11 +801,13 @@ ID_INLINE int idMath::Ftoi( float f ) {
 }
 
 ID_INLINE int idMath::FtoiFast( float f ) {
-#ifdef _WIN32
+#ifdef ID_WIN_X86_ASM
 	int i;
 	__asm fld		f
 	__asm fistp		i		// use default rouding mode (round nearest)
 	return i;
+#elif defined( _WIN64 )		// round nearest, as the 32-bit build does
+	return _mm_cvtss_si32( _mm_load_ss( &f ) );
 #elif 0						// round chop (C/C++ standard)
 	int i, s, e, m, shift;
 	i = *reinterpret_cast<int *>(&f);
@@ -829,12 +835,14 @@ ID_INLINE unsigned long idMath::Ftol( float f ) {
 }
 
 ID_INLINE unsigned long idMath::FtolFast( float f ) {
-#ifdef _WIN32
+#ifdef ID_WIN_X86_ASM
 	// FIXME: this overflows on 31bits still .. same as FtoiFast
 	unsigned long i;
 	__asm fld		f
 	__asm fistp		i		// use default rouding mode (round nearest)
 	return i;
+#elif defined( _WIN64 )		// round nearest, as the 32-bit build does
+	return (unsigned long) _mm_cvtss_si64( _mm_load_ss( &f ) );
 #elif 0						// round chop (C/C++ standard)
 	int i, s, e, m, shift;
 	i = *reinterpret_cast<int *>(&f);

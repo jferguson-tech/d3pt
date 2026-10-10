@@ -344,7 +344,9 @@ bool idRenderSystemLocal::RegisterFont( const char *fontName, fontInfoEx_t &font
 		idStr::Copynz( outFont->name, name, sizeof( outFont->name ) );
 
 		len = fileSystem->ReadFile( name, NULL, &ftime );
-		if ( len != sizeof( fontInfo_t ) ) {
+		// the size of a fontInfo_t as it is in the file, where a pointer is 4 bytes:
+		// 80 bytes for each glyph, then the scale and the name
+		if ( len != GLYPHS_PER_FONT * 80 + 4 + 64 ) {
 			common->Warning( "RegisterFont: couldn't find font: '%s'", name );
 			return false;
 		}

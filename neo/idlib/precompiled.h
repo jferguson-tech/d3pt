@@ -42,7 +42,11 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef _D3SDK
 #ifndef GAME_DLL
 
+#ifdef ID_NO_TOOLS
+#define WINVER				0x0601
+#else
 #define WINVER				0x501
+#endif
 
 #if 0
 // Dedicated server hits unresolved when trying to link this way now. Likely because of the 2010/Win7 transition? - TTimo
@@ -58,7 +62,15 @@ If you have questions concerning this license or the applicable additional terms
 
 #else
 
+#ifdef ID_NO_TOOLS
+// built without the editors, so without MFC
+#define	_WIN32_WINNT 0x0601
+#define	WIN32_LEAN_AND_MEAN
+#define	NOMINMAX
+#include <windows.h>
+#else
 #include "../tools/comafx/StdAfx.h"
+#endif
 
 #endif
 
