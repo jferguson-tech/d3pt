@@ -561,6 +561,18 @@ bool R_GlobalShaderOverride( const idMaterial **shader );
 // this does various checks before calling the idDeclSkin
 const idMaterial *R_RemapShaderBySkin( const idMaterial *shader, const idDeclSkin *customSkin, const idMaterial *customShader );
 
+/*
+============================================================
+
+PATH TRACER (tr_pathtrace.cpp)
+
+============================================================
+*/
+
+bool PT_DrawView( void );
+void PT_Shutdown( void );
+void PT_Reload_f( const idCmdArgs &args );
+
 
 //====================================================
 

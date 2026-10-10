@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Jonathan Ferguson
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+// Puts the picture together: the filtered light times what the surface
+// reflects, exposed. Also takes the readings the exposure for the next
+// frame is set from. Glow, grading and anti-aliasing follow.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "scene.glsl"
+
+layout(push_constant) uniform Pass
+{
+	int		source;		// 0: what was gathered over time; 1, 2: the filter's sets, whose a is the noise left
+	int		unused0, unused1, unused2;
+} pass;
+
+vec4 Load(int k, ivec2 q)
+{
+	if (pass.source == 0)
+		return imageLoad(img_kept[fr.frame_has.z * 3 + k], q);
+	return imageLoad(img_filter[(pass.source - 1) * 3 + k], q);
+}
+
+void main()
+{
+	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	const ivec2 size = fr.size.xy;
+	if (pixel.x >= size.x || pixel.y >= size.y)
+		return;
+	const int now = fr.frame_has.z;
+
+	const vec4 surface = imageLoad(img_surface[now], pixel);
+	const vec4 diffuse = Load(0, pixel), specular = Load(1, pixel), layers = Load(2, pixel);
+	const vec3 albedo_d = imageLoad(img_albedo[0], pixel).rgb, albedo_s = imageLoad(img_albedo[1], pixel).rgb;
+	const vec3 extra = imageLoad(img_extra, pixel).rgb;
+
+	vec3 c = albedo_d * diffuse.rgb + albedo_s * specular.rgb + layers.rgb + extra;
+
+	// one part of the picture on its own, for finding where a fault lies
+	const int debug = fr.settings2.w;
+	float exposure = fr.medium.w;
+	if (debug != 0)
+	{
+		exposure = 1.0;
+		if (debug == 1) c = albedo_d;
+		else if (debug == 2) c = diffuse.rgb;
+		else if (debug == 3) c = albedo_s * specular.rgb;
+		else if (debug == 4) c = layers.rgb;
+		else if (debug == 5) c = extra;
+		else if (debug == 6) c = surface.xyz * 0.25 + 0.25;
+		else if (debug == 7) c = vec3(min(imageLoad(img_kept[now * 3], pixel).a, 32.0) / 64.0);
+		else if (debug == 8) c = vec3(min(imageLoad(img_kept[now * 3 + 2], pixel).a, 32.0) / 64.0);
+		else if (debug == 10) c = vec3(surface.a * 0.002);
+		else if (debug == 13) c = vec3(Changed(pixel), imageLoad(img_change[3], pixel / 8).y / 12.0, 0.0);
+		else if (debug == 12) c = vec3((pass.source == 0 ? sqrt(GatheredVariance(0, pixel, diffuse.a)) : diffuse.a) * 4.0);
+	}
+	if (fr.bases.x == VIEW_BOUNCES)
+		c = BounceColour(diffuse.r);
+	else if (fr.bases.x == VIEW_COST)
+		c = CostColour(diffuse.r);
+	c *= exposure;
+
+	// readings for the exposure, from pixels spread over the picture
+	const int every = max(3, int(sqrt(float(size.x * size.y) / 60000.0)) + 1);
+	if (debug == 0 && pixel.x % every == 1 && pixel.y % every == 1)
+	{
+		const float reading = clamp(log(Luminance(c) + 1.0e-4) + 16.0, 0.0, 32.0);
+		atomicAdd(meter.v[0], uint(reading * 256.0));
+		atomicAdd(meter.v[1], 1u);
+	}
+
+	imageStore(img_hdr, pixel, vec4(c, 1.0));
+}

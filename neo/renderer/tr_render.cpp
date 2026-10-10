@@ -875,6 +875,11 @@ void RB_DrawView( const void *data ) {
 		GLimp_DeactivateContext();
 	}
 
+	// the path tracer draws a map's 3D views in OpenGL's place
+	if ( PT_DrawView() ) {
+		return;
+	}
+
 	backEnd.pc.c_surfaces += backEnd.viewDef->numDrawSurfs;
 
 	RB_ShowOverdraw();
