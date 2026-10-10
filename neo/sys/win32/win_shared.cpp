@@ -618,6 +618,7 @@ void Sym_GetFuncInfo( long addr, idStr &module, idStr &funcName ) {
 GetFuncAddr
 ==================
 */
+#ifndef _WIN64
 address_t GetFuncAddr( address_t midPtPtr ) {
 	long temp;
 	do {
@@ -636,7 +637,6 @@ address_t GetFuncAddr( address_t midPtPtr ) {
 GetCallerAddr
 ==================
 */
-#ifndef _WIN64
 address_t GetCallerAddr( long _ebp ) {
 	long midPtPtr;
 	long res = 0;

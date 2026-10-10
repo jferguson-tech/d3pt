@@ -12,6 +12,8 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # the code is C++ of 2004: let it through as it is, and say nothing of its style
 add_compile_options(/permissive /Zc:strictStrings- /W1 /GR /EHsc /fp:fast /MP)
+# a pointer put through a 32-bit integer is an error, not a warning
+add_compile_options(/we4311 /we4312 /we4302 /we4306)
 add_compile_definitions(
 	WIN32 _WINDOWS
 	_CRT_SECURE_NO_DEPRECATE _CRT_NONSTDC_NO_DEPRECATE _CRT_SECURE_NO_WARNINGS

@@ -131,7 +131,7 @@ void *idVertexCache::Position( vertCache_t *buffer ) {
 		} else {
 			qglBindBufferARB( GL_ARRAY_BUFFER_ARB, buffer->vbo );
 		}
-		return (void *)buffer->offset;
+		return (void *)(intptr_t)buffer->offset;
 	}
 
 	// virtual memory is a real pointer

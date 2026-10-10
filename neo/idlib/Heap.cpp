@@ -29,6 +29,13 @@ If you have questions concerning this license or the applicable additional terms
 #include "../idlib/precompiled.h"
 #pragma hdrstop
 
+// The small, medium and large allocators below keep pointers in 32 bits.
+// The 64-bit build goes to the C runtime, and they are compiled but not used.
+#ifdef _WIN64
+	#define USE_LIBC_MALLOC		1
+	#pragma warning( disable : 4311 4312 4302 4306 )
+#endif
+
 #ifndef USE_LIBC_MALLOC
 	#define USE_LIBC_MALLOC		0
 #endif
@@ -320,24 +327,24 @@ idHeap::Allocate16
 void *idHeap::Allocate16( const dword bytes ) {
 	byte *ptr, *alignedPtr;
 
-	ptr = (byte *) malloc( bytes + 16 + 4 );
+	ptr = (byte *) malloc( bytes + 16 + sizeof( void * ) );
 	if ( !ptr ) {
 		if ( defragBlock ) {
 			idLib::common->Printf( "Freeing defragBlock on alloc of %i.\n", bytes );
 			free( defragBlock );
 			defragBlock = NULL;
-			ptr = (byte *) malloc( bytes + 16 + 4 );			
+			ptr = (byte *) malloc( bytes + 16 + sizeof( void * ) );			
 			AllocDefragBlock();
 		}
 		if ( !ptr ) {
 			common->FatalError( "malloc failure for %i", bytes );
 		}
 	}
-	alignedPtr = (byte *) ( ( (int) ptr ) + 15 & ~15 );
-	if ( alignedPtr - ptr < 4 ) {
+	alignedPtr = (byte *) ( ( (intptr_t) ptr ) + 15 & ~15 );
+	if ( alignedPtr - ptr < (int) sizeof( void * ) ) {
 		alignedPtr += 16;
 	}
-	*((int *)(alignedPtr - 4)) = (int) ptr;
+	*((void **)(alignedPtr - sizeof( void * ))) = ptr;
 	return (void *) alignedPtr;
 }
 
@@ -347,7 +354,7 @@ idHeap::Free16
 ================
 */
 void idHeap::Free16( void *p ) {
-	free( (void *) *((int *) (( (byte *) p ) - 4)) );
+	free( *((void **) (( (byte *) p ) - sizeof( void * ))) );
 }
 
 /*
@@ -1116,7 +1123,7 @@ void *Mem_Alloc16( const int size ) {
 	}
 	void *mem = mem_heap->Allocate16( size );
 	// make sure the memory is 16 byte aligned
-	assert( ( ((int)mem) & 15) == 0 );
+	assert( ( ((intptr_t)mem) & 15) == 0 );
 	return mem;
 }
 
@@ -1137,7 +1144,7 @@ void Mem_Free16( void *ptr ) {
 		return;
 	}
 	// make sure the memory is 16 byte aligned
-	assert( ( ((int)ptr) & 15) == 0 );
+	assert( ( ((intptr_t)ptr) & 15) == 0 );
  	mem_heap->Free16( ptr );
 }
 
@@ -1689,7 +1696,7 @@ void *Mem_Alloc16( const int size, const char *fileName, const int lineNumber ) 
 	}
 	void *mem = Mem_AllocDebugMemory( size, fileName, lineNumber, true );
 	// make sure the memory is 16 byte aligned
-	assert( ( ((int)mem) & 15) == 0 );
+	assert( ( ((intptr_t)mem) & 15) == 0 );
 	return mem;
 }
 
@@ -1703,7 +1710,7 @@ void Mem_Free16( void *ptr, const char *fileName, const int lineNumber ) {
 		return;
 	}
 	// make sure the memory is 16 byte aligned
-	assert( ( ((int)ptr) & 15) == 0 );
+	assert( ( ((intptr_t)ptr) & 15) == 0 );
 	Mem_FreeDebugMemory( ptr, fileName, lineNumber, true );
 }
 
