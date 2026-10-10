@@ -223,28 +223,58 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 				fade = fade >= 1.0f ? 0.0f : 1.0f - fade * fade;
 				score *= fade * fade;
 			}
-			// one that can be seen from none of the cell's places keeps a small
-			// chance: they are not all the places there are
-			if (score > 0.0f && l.tri == ~0u && l.reach > 0.0f && !l.no_shadow && any_reach && seen_count[ci])
+			// What it puts on the cell's surfaces, as far as the places on
+			// them can tell: at each, how far it has faded there and whether
+			// it can be seen from there. This is what tells a room's own
+			// lamp from the many large lights of the rooms about it, whose
+			// volumes cover the cell as well but light little or none of
+			// it. A little is kept of the rougher guess above: the places
+			// are not all the places there are.
+			if (score > 0.0f && l.tri == ~0u && l.reach > 0.0f && any_reach && seen_count[ci])
 			{
-				bool seen = false;
-				for (int i = 0; i < seen_count[ci] && !seen; i++)
+				float lit = 0.0f;
+				for (int i = 0; i < seen_count[ci]; i++)
 				{
-					Ray ray;
-					ray.o = seen_from[ci * kSeen + i];
-					ray.d = l.origin - ray.o;
-					ray.tmin = 0.0f;
-					ray.tmax = 0.999f;
-					// Hidden only if something stops the light whichever side of
-					// a surface is taken to cast its shadow (pt_view_t's
-					// shadow_faces, which is not known here): a light set
-					// inside a wall is seen from the room under one of the two.
-					const Vec3 d = ray.d;
-					seen = !w.bvh.AnyHit(ray, [&](uint32_t t, float, float) { return solid(t) && Dot(w.tris[t].n, d) > 0.0f; })
-						|| !w.bvh.AnyHit(ray, [&](uint32_t t, float, float) { return solid(t) && Dot(w.tris[t].n, d) < 0.0f; });
+					const Vec3 at = seen_from[ci * kSeen + i];
+					float fade = 1.0f;
+					if (l.box_size.x > 0.0f)
+					{
+						for (int a = 0; a < 3; a++)
+						{
+							const float u = std::fabs(at[a] - l.box_origin[a]) / l.box_size[a];
+							fade *= u >= 1.0f ? 0.0f : 1.0f - u * u;
+						}
+					}
+					else
+					{
+						const Vec3 to = l.origin - at;
+						float u = Dot(to, to) / (l.reach * l.reach);
+						u = u >= 1.0f ? 0.0f : 1.0f - u * u;
+						fade = u * u;
+					}
+					if (fade <= 0.0f)
+						continue;
+					if (!l.no_shadow)
+					{
+						Ray ray;
+						ray.o = at;
+						ray.d = l.origin - ray.o;
+						ray.tmin = 0.0f;
+						ray.tmax = 0.999f;
+						// Hidden only if something stops the light whichever side of
+						// a surface is taken to cast its shadow (pt_view_t's
+						// shadow_faces, which is not known here): a light set
+						// inside a wall is seen from the room under one of the two.
+						const Vec3 d = ray.d;
+						if (w.bvh.AnyHit(ray, [&](uint32_t t, float, float) { return solid(t) && Dot(w.tris[t].n, d) > 0.0f; })
+								&& w.bvh.AnyHit(ray, [&](uint32_t t, float, float) { return solid(t) && Dot(w.tris[t].n, d) < 0.0f; }))
+							continue;
+					}
+					lit += fade;
 				}
-				if (!seen)
-					score *= 0.02f;
+				// (score has the fade at the cell's middle in it already)
+				const float whole = power[li] / std::max(std::max(Dot(d, d), min_dist2), l.core * l.core);
+				score = 0.02f * score + 0.98f * whole * lit / (float)seen_count[ci];
 			}
 			scored[li] = {score, (uint32_t)li};
 		}
