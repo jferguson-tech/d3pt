@@ -33,19 +33,17 @@ The path traced view (r_pathTrace 1).
 The tracer is the library in pt/, which knows nothing of this engine. This
 file is what stands between the two:
 
-  the world: when a map's first view is drawn, the triangles of every model
-  that is taken to stay as it is, the picture each of their materials is
-  lit through, and the map's lights, are handed over.
+  the world: when a map's first view is drawn, the triangles of the map's
+  own models (its areas), the picture each of their materials is lit
+  through, and the map's lights, are handed over once.
 
-  what moves: the triangles of every other model are gathered for every view
-  by the front end, as they stand then: monsters and the weapon after they
-  have been posed, doors and lifts where they are.
-
-  Nothing says which of a map's models the game will move. The map's own
-  (its areas) never do. An entity's is taken to stay if it is not posed and
-  is a model from a file or a brush model of a func_static, and is watched:
-  the first time one is found moved, changed or gone, it is counted among
-  what moves from then on and the world is handed over again without it.
+  what moves: every other model in the render world is an entity's, and the
+  game may move, change or remove any of them, so none is handed over with
+  the world. For every view the front end gathers the triangles of those in
+  the areas that the eye's area is joined to by open portals, as they stand
+  then: monsters and the weapon after they have been posed, doors and lifts
+  where they are. What is behind a shut door is neither seen nor lights
+  anything that is.
 
   the lights: every frame each light the world was handed with is given the
   colour it has now, which is none if it has gone or moved, and every light
@@ -106,15 +104,6 @@ typedef struct {
 	int		first, count;		// triangles
 } ptSpan_t;
 
-// a model that was handed over with the world, as it was then
-typedef struct {
-	const idRenderModel *	model;			// NULL: this entity's was not
-	idVec3					origin;
-	idMat3					axis;
-	const idDeclSkin *		customSkin;
-	const idMaterial *		customShader;
-} ptBaked_t;
-
 // a material of something that moves
 typedef struct {
 	const idMaterial *	shader;
@@ -142,12 +131,6 @@ static struct {
 	bool					restart;
 	bool					listLights;			// listPathTraceLights: say what the next view's are
 	bool					listEntities;		// listPathTraceEntities: the same of its entities
-
-	// what was handed over with the world, by the place of its entity in the render world
-	const idRenderWorldLocal *bakedFor;
-	idList<ptBaked_t>		baked;
-	idList<bool>			moves;				// found not to stay: never handed over with the world again
-	int						numFound;			// how many were found so since the map began
 
 	// what moves, gathered by the front end for one view
 	const viewDef_t *		gatheredFor;
@@ -205,8 +188,6 @@ void PT_Shutdown( void ) {
 	pt.worldLights.Clear();
 	pt.lightScales.Clear();
 	pt.frameLights.Clear();
-	pt.baked.Clear();
-	pt.moves.Clear();
 	pt.positions.Clear();
 	pt.uvs.Clear();
 	pt.normals.Clear();
@@ -425,34 +406,15 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool
 
 /*
 ================
-PT_Stays
+PT_IsOfTheMap
 
-Whether an entity's model is handed over with the world.
+The map's own models, which nothing moves, are handed over with the world.
+Every other model is gathered for each view.
 ================
 */
-static bool PT_Stays( const idRenderEntityLocal *def, int defIndex ) {
-	const renderEntity_t	&parms = def->parms;
-	const idRenderModel		*model = parms.hModel;
-
-	if ( !model || model->IsDynamicModel() != DM_STATIC || parms.callback ) {
-		return false;
-	}
-	const char *name = model->Name();
-	if ( idStr::Cmpn( name, "_area", 5 ) == 0 ) {
-		return true;		// the map's own
-	}
-	if ( !r_ptEntities.GetBool() ) {
-		return false;
-	}
-	if ( defIndex < pt.moves.Num() && pt.moves[defIndex] ) {
-		return false;
-	}
-	// what is held in the hand, and what is not in every view
-	if ( parms.weaponDepthHack || parms.modelDepthHack != 0.0f || parms.allowSurfaceInViewID || parms.suppressSurfaceInViewID ) {
-		return false;
-	}
-	// a model from a file, or a func_static's brushes; a door's or a lift's brushes are named for it
-	return strchr( name, '.' ) != NULL || idStr::Cmpn( name, "func_static", 11 ) == 0;
+static bool PT_IsOfTheMap( const idRenderEntityLocal *def ) {
+	const idRenderModel *model = def->parms.hModel;
+	return model && model->IsDynamicModel() == DM_STATIC && !def->parms.callback && idStr::Cmpn( model->Name(), "_area", 5 ) == 0;
 }
 
 /*
@@ -731,18 +693,6 @@ static void PT_LoadWorld( const viewDef_t *viewDef ) {
 	int				i;
 	int				start = Sys_Milliseconds();
 
-	// a new map: nothing is known of what moves in it
-	const bool newMap = pt.bakedFor != world || pt.mapTimeStamp != world->mapTimeStamp || pt.mapName != world->mapName;
-	if ( newMap ) {
-		pt.moves.Clear();
-		pt.numFound = 0;
-	}
-	pt.bakedFor = world;
-	pt.baked.SetNum( world->entityDefs.Num(), false );
-	if ( pt.baked.Num() ) {
-		memset( pt.baked.Ptr(), 0, pt.baked.Num() * sizeof( ptBaked_t ) );
-	}
-
 	build.positions.SetGranularity( 65536 );
 	build.uvs.SetGranularity( 65536 );
 	build.indices.SetGranularity( 65536 );
@@ -751,17 +701,10 @@ static void PT_LoadWorld( const viewDef_t *viewDef ) {
 	for ( i = 0; i < world->entityDefs.Num(); i++ ) {
 		const idRenderEntityLocal *def = world->entityDefs[i];
 
-		if ( !def || !PT_Stays( def, i ) ) {
+		if ( !def || !PT_IsOfTheMap( def ) ) {
 			continue;
 		}
 		PT_AddModel( build, def );
-
-		ptBaked_t &baked = pt.baked[i];
-		baked.model = def->parms.hModel;
-		baked.origin = def->parms.origin;
-		baked.axis = def->parms.axis;
-		baked.customSkin = def->parms.customSkin;
-		baked.customShader = def->parms.customShader;
 	}
 	pt.worldLights.Clear();
 	for ( i = 0; i < world->lightDefs.Num(); i++ ) {
@@ -788,6 +731,7 @@ static void PT_LoadWorld( const viewDef_t *viewDef ) {
 	}
 	w.sky_scale = 1.0f;
 
+	const int gathered = Sys_Milliseconds();
 	pt.backend->load_world( pt.backend, &w );
 
 	for ( i = 0; i < build.pixels.Num(); i++ ) {
@@ -797,11 +741,11 @@ static void PT_LoadWorld( const viewDef_t *viewDef ) {
 	pt.world = world;
 	pt.mapName = world->mapName;
 	pt.mapTimeStamp = world->mapTimeStamp;
-	pt.restart = newMap;
+	pt.restart = true;
 
-	common->Printf( "path tracer: %s: %d triangles, %d materials, %d textures, %d lights, %d msec\n", world->mapName.c_str(),
-					w.num_triangles, w.num_materials, w.num_textures, w.num_lights, Sys_Milliseconds() - start );
-	common->Printf( "path tracer: %d triangles of %d entities gathered in %d msec, %d found to move so far\n", pt.triMaterials.Num(), pt.spans.Num(), pt.gatherMsec, pt.numFound );
+	common->Printf( "path tracer: %s: %d triangles, %d materials, %d textures, %d lights, %d msec to gather and %d to hand over\n", world->mapName.c_str(),
+					w.num_triangles, w.num_materials, w.num_textures, w.num_lights, gathered - start, Sys_Milliseconds() - gathered );
+	common->Printf( "path tracer: %d triangles of %d entities gathered in %d msec\n", pt.triMaterials.Num(), pt.spans.Num(), pt.gatherMsec );
 }
 
 /*
@@ -892,12 +836,8 @@ void PT_GatherView( void ) {
 	pt.spans.SetNum( 0, false );
 	pt.gatheredFor = viewDef;
 
-	// whether what was handed over is this map's: if not it is about to be, and what will be then is left out here
-	const bool knowsWorld = pt.bakedFor == world && pt.mapTimeStamp == world->mapTimeStamp && pt.mapName == world->mapName;
-	const int numBaked = knowsWorld ? Min( pt.baked.Num(), world->entityDefs.Num() ) : 0;
-	if ( r_ptEntities.IsModified() ) {
-		r_ptEntities.ClearModified();
-		pt.world = NULL;
+	if ( !r_ptEntities.GetBool() ) {
+		return;
 	}
 
 	const int	viewID = viewDef->renderView.viewID;
@@ -906,35 +846,20 @@ void PT_GatherView( void ) {
 	for ( i = 0; i < world->entityDefs.Num(); i++ ) {
 		idRenderEntityLocal *def = world->entityDefs[i];
 
-		// what was handed over with the world, if it is still as it was then
-		if ( i < numBaked && pt.baked[i].model ) {
-			const ptBaked_t &baked = pt.baked[i];
-			if ( def && def->parms.hModel == baked.model && def->parms.customSkin == baked.customSkin && def->parms.customShader == baked.customShader
-					&& def->parms.origin.Compare( baked.origin, 0.01f ) && def->parms.axis.Compare( baked.axis, 0.0001f )
-					&& !def->parms.callback ) {
-				if ( list && ( def->parms.origin - viewDef->renderView.vieworg ).Length() < 512.0f ) {
-					common->Printf( "%5i with the world       %s\n", i, baked.model->Name() );
+		if ( !def || !def->parms.hModel || PT_IsOfTheMap( def ) ) {
+			continue;
+		}
+		// only what is in an area the eye's is joined to
+		if ( viewDef->connectedAreas ) {
+			const areaReference_t *ref;
+			for ( ref = def->entityRefs; ref; ref = ref->ownerNext ) {
+				if ( viewDef->connectedAreas[ ref->area->areaNum ] ) {
+					break;
 				}
+			}
+			if ( !ref ) {
 				continue;
 			}
-			// it does not stay: the world is handed over again, without it
-			if ( pt.moves.Num() <= i ) {
-				const int was = pt.moves.Num();
-				pt.moves.SetNum( world->entityDefs.Num(), true );
-				memset( &pt.moves[was], 0, ( pt.moves.Num() - was ) * sizeof( bool ) );
-			}
-			pt.moves[i] = true;
-			pt.numFound++;
-			pt.world = NULL;
-		}
-		if ( !def || !def->parms.hModel || ( !knowsWorld && PT_Stays( def, i ) ) ) {
-			continue;
-		}
-		if ( idStr::Cmpn( def->parms.hModel->Name(), "_area", 5 ) == 0 ) {
-			continue;
-		}
-		if ( !r_ptEntities.GetBool() ) {
-			continue;
 		}
 		// the player's own body, which the player does not see, and what only the player sees
 		if ( def->parms.suppressSurfaceInViewID && def->parms.suppressSurfaceInViewID == viewID ) {
