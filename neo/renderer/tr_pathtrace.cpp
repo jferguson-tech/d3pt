@@ -34,8 +34,18 @@ The tracer is the library in pt/, which knows nothing of this engine. This
 file is what stands between the two:
 
   the world: when a map's first view is drawn, the triangles of every model
-  in the render world that does not deform, the picture each of their
-  materials is lit through, and the map's lights, are handed over once.
+  that is taken to stay as it is, the picture each of their materials is
+  lit through, and the map's lights, are handed over.
+
+  what moves: the triangles of every other model are gathered for every view
+  by the front end, as they stand then: monsters and the weapon after they
+  have been posed, doors and lifts where they are.
+
+  Nothing says which of a map's models the game will move. The map's own
+  (its areas) never do. An entity's is taken to stay if it is not posed and
+  is a model from a file or a brush model of a func_static, and is watched:
+  the first time one is found moved, changed or gone, it is counted among
+  what moves from then on and the world is handed over again without it.
 
   the lights: every frame each light the world was handed with is given the
   colour it has now, which is none if it has gone or moved, and every light
@@ -45,9 +55,8 @@ file is what stands between the two:
   shares with OpenGL, and that picture is drawn where the 3D view would have
   been. Everything 2D is then drawn over it by OpenGL as it always was.
 
-What is not there yet: anything that moves or deforms (doors stay where
-they were when the map was handed over), translucent surfaces, and all that
-the lights' own pictures do.
+What is not there yet: translucent surfaces, particles, surfaces the game
+bends as it draws them, and all that the lights' own pictures do.
 
 */
 
@@ -68,6 +77,7 @@ idCVar r_ptExposure( "r_ptExposure", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCH
 idCVar r_ptAutoExposure( "r_ptAutoExposure", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: adapt the exposure to the scene" );
 idCVar r_ptLightScale( "r_ptLightScale", "2", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright a light is for its colour and size" );
 idCVar r_ptDenoise( "r_ptDenoise", "4", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: passes of the spatial filter, 0-4" );
+idCVar r_ptEntities( "r_ptEntities", "1", CVAR_RENDERER | CVAR_BOOL, "path tracer: trace the models of entities: monsters, doors, the weapon and all else that is not the map itself" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
 
 // OpenGL's side of opening the tracer's picture (GL_EXT_memory_object, GL_EXT_memory_object_win32)
@@ -90,6 +100,27 @@ typedef struct {
 	float				level;				// its intensity is this times what a light of colour 1 has
 } ptWorldLight_t;
 
+// the triangles of one entity among those gathered
+typedef struct {
+	int		defIndex;
+	int		first, count;		// triangles
+} ptSpan_t;
+
+// a model that was handed over with the world, as it was then
+typedef struct {
+	const idRenderModel *	model;			// NULL: this entity's was not
+	idVec3					origin;
+	idMat3					axis;
+	const idDeclSkin *		customSkin;
+	const idMaterial *		customShader;
+} ptBaked_t;
+
+// a material of something that moves
+typedef struct {
+	const idMaterial *	shader;
+	unsigned int		flags;		// PT_MAT_NO_SHADOW, PT_MAT_HELD
+} ptMoving_t;
+
 static struct {
 	pt_backend_t *			backend;
 	bool					failed;				// do not try again until the renderer restarts
@@ -110,6 +141,28 @@ static struct {
 	ID_TIME_T				mapTimeStamp;
 	bool					restart;
 	bool					listLights;			// listPathTraceLights: say what the next view's are
+	bool					listEntities;		// listPathTraceEntities: the same of its entities
+
+	// what was handed over with the world, by the place of its entity in the render world
+	const idRenderWorldLocal *bakedFor;
+	idList<ptBaked_t>		baked;
+	idList<bool>			moves;				// found not to stay: never handed over with the world again
+	int						numFound;			// how many were found so since the map began
+
+	// what moves, gathered by the front end for one view
+	const viewDef_t *		gatheredFor;
+	idList<float>			positions;			// 9 per triangle
+	idList<float>			uvs;				// 6
+	idList<float>			normals;			// 9
+	idList<float>			prevPositions;		// 9: where it was in the view before
+	idList<unsigned int>	triMaterials;		// an index into moving
+	idList<ptSpan_t>		spans, prevSpans;	// whose triangles are where
+	idList<float>			lastPositions;		// the view before's positions
+	idList<ptMoving_t>		moving;				// the materials of what moves
+	idList<pt_material_t>	movingMaterials;	// the same, as the tracer has them
+	idList<const idImage *>	movingImages;		// the pictures they are lit through
+	idList<int>				movingTextures;		// and the tracer's handle for each, or -1
+	int						gatherMsec;
 } pt;
 
 // what is gathered of a world before it is handed over
@@ -152,6 +205,20 @@ void PT_Shutdown( void ) {
 	pt.worldLights.Clear();
 	pt.lightScales.Clear();
 	pt.frameLights.Clear();
+	pt.baked.Clear();
+	pt.moves.Clear();
+	pt.positions.Clear();
+	pt.uvs.Clear();
+	pt.normals.Clear();
+	pt.prevPositions.Clear();
+	pt.triMaterials.Clear();
+	pt.spans.Clear();
+	pt.prevSpans.Clear();
+	pt.lastPositions.Clear();
+	pt.moving.Clear();
+	pt.movingMaterials.Clear();
+	pt.movingImages.Clear();
+	pt.movingTextures.Clear();
 	pt.mapName.Clear();
 	memset( &pt, 0, sizeof( pt ) );
 }
@@ -275,6 +342,38 @@ static int PT_TextureFor( ptWorldBuild_t &build, const idImage *image ) {
 
 /*
 ================
+PT_ReadStages
+
+What the tracer takes from a material: the picture it is lit through, or
+failing that one it shows unlit, and whether that picture's alpha cuts holes
+in it. The game cuts holes by any stage it likes, and a monster's are cut by
+a picture of its own that burns it away when it dies: only holes cut by the
+picture that is shown can be given to the tracer.
+================
+*/
+static const idImage *PT_ReadStages( const idMaterial *shader, bool &glows, bool &holes ) {
+	const shaderStage_t	*diffuse = NULL;
+	const shaderStage_t	*unlit = NULL;
+
+	for ( int i = 0; i < shader->GetNumStages(); i++ ) {
+		const shaderStage_t *stage = shader->GetStage( i );
+		if ( !stage->texture.image || stage->texture.cinematic || stage->texture.dynamic != DI_STATIC ) {
+			continue;
+		}
+		if ( stage->lighting == SL_DIFFUSE && !diffuse ) {
+			diffuse = stage;
+		} else if ( stage->lighting == SL_AMBIENT && !unlit ) {
+			unlit = stage;
+		}
+	}
+	const shaderStage_t *shown = diffuse ? diffuse : unlit;
+	glows = !diffuse && unlit;
+	holes = shown && shown->hasAlphaTest;
+	return shown ? shown->texture.image : NULL;
+}
+
+/*
+================
 PT_MaterialFor
 
 Returns the index in the build's materials, or -1 for a surface that is not traced.
@@ -282,8 +381,7 @@ Returns the index in the build's materials, or -1 for a surface that is not trac
 */
 static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool noShadow ) {
 	int					i;
-	const shaderStage_t	*diffuse = NULL;
-	const shaderStage_t	*unlit = NULL;
+	bool				glows, holes;
 	pt_material_t		material;
 
 	if ( !shader || !shader->IsDrawn() || shader->Coverage() == MC_TRANSLUCENT ) {
@@ -300,35 +398,22 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool
 		}
 	}
 
-	for ( i = 0; i < shader->GetNumStages(); i++ ) {
-		const shaderStage_t *stage = shader->GetStage( i );
-		if ( !stage->texture.image || stage->texture.cinematic || stage->texture.dynamic != DI_STATIC ) {
-			continue;
-		}
-		if ( stage->lighting == SL_DIFFUSE && !diffuse ) {
-			diffuse = stage;
-		} else if ( stage->lighting == SL_AMBIENT && !unlit ) {
-			unlit = stage;
-		}
-	}
+	const idImage *image = PT_ReadStages( shader, glows, holes );
 
 	memset( &material, 0, sizeof( material ) );
-	material.texture = -1;
+	material.texture = PT_TextureFor( build, image );
 	material.normal_texture = -1;
 	material.anim_next = -1;
 	material.alpha = 1.0f;
 	material.roughness = 0.7f;
-	if ( shader->Coverage() == MC_PERFORATED ) {
+	if ( holes ) {
 		material.flags |= PT_MAT_ALPHA_TEST;
 	}
 	if ( noShadow ) {
 		material.flags |= PT_MAT_NO_SHADOW;
 	}
-	if ( diffuse ) {
-		material.texture = PT_TextureFor( build, diffuse->texture.image );
-	} else if ( unlit ) {
+	if ( glows ) {
 		// not lit by the game's lights: it shows as it is painted, so it glows
-		material.texture = PT_TextureFor( build, unlit->texture.image );
 		material.flags |= PT_MAT_EMIT_TEXTURE;
 		material.emission[0] = material.emission[1] = material.emission[2] = 0.5f;
 	}
@@ -336,6 +421,38 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool
 	build.shaders.Append( shader );
 	build.noShadows.Append( noShadow );
 	return build.materials.Append( material );
+}
+
+/*
+================
+PT_Stays
+
+Whether an entity's model is handed over with the world.
+================
+*/
+static bool PT_Stays( const idRenderEntityLocal *def, int defIndex ) {
+	const renderEntity_t	&parms = def->parms;
+	const idRenderModel		*model = parms.hModel;
+
+	if ( !model || model->IsDynamicModel() != DM_STATIC || parms.callback ) {
+		return false;
+	}
+	const char *name = model->Name();
+	if ( idStr::Cmpn( name, "_area", 5 ) == 0 ) {
+		return true;		// the map's own
+	}
+	if ( !r_ptEntities.GetBool() ) {
+		return false;
+	}
+	if ( defIndex < pt.moves.Num() && pt.moves[defIndex] ) {
+		return false;
+	}
+	// what is held in the hand, and what is not in every view
+	if ( parms.weaponDepthHack || parms.modelDepthHack != 0.0f || parms.allowSurfaceInViewID || parms.suppressSurfaceInViewID ) {
+		return false;
+	}
+	// a model from a file, or a func_static's brushes; a door's or a lift's brushes are named for it
+	return strchr( name, '.' ) != NULL || idStr::Cmpn( name, "func_static", 11 ) == 0;
 }
 
 /*
@@ -614,17 +731,37 @@ static void PT_LoadWorld( const viewDef_t *viewDef ) {
 	int				i;
 	int				start = Sys_Milliseconds();
 
+	// a new map: nothing is known of what moves in it
+	const bool newMap = pt.bakedFor != world || pt.mapTimeStamp != world->mapTimeStamp || pt.mapName != world->mapName;
+	if ( newMap ) {
+		pt.moves.Clear();
+		pt.numFound = 0;
+	}
+	pt.bakedFor = world;
+	pt.baked.SetNum( world->entityDefs.Num(), false );
+	if ( pt.baked.Num() ) {
+		memset( pt.baked.Ptr(), 0, pt.baked.Num() * sizeof( ptBaked_t ) );
+	}
+
+	build.positions.SetGranularity( 65536 );
+	build.uvs.SetGranularity( 65536 );
+	build.indices.SetGranularity( 65536 );
+	build.triMaterials.SetGranularity( 65536 );
+
 	for ( i = 0; i < world->entityDefs.Num(); i++ ) {
 		const idRenderEntityLocal *def = world->entityDefs[i];
 
-		if ( !def || !def->parms.hModel || def->parms.hModel->IsDynamicModel() != DM_STATIC ) {
-			continue;
-		}
-		// what is held in the hand, and what only shows in a mirror
-		if ( def->parms.weaponDepthHack || def->parms.allowSurfaceInViewID ) {
+		if ( !def || !PT_Stays( def, i ) ) {
 			continue;
 		}
 		PT_AddModel( build, def );
+
+		ptBaked_t &baked = pt.baked[i];
+		baked.model = def->parms.hModel;
+		baked.origin = def->parms.origin;
+		baked.axis = def->parms.axis;
+		baked.customSkin = def->parms.customSkin;
+		baked.customShader = def->parms.customShader;
 	}
 	pt.worldLights.Clear();
 	for ( i = 0; i < world->lightDefs.Num(); i++ ) {
@@ -660,10 +797,302 @@ static void PT_LoadWorld( const viewDef_t *viewDef ) {
 	pt.world = world;
 	pt.mapName = world->mapName;
 	pt.mapTimeStamp = world->mapTimeStamp;
-	pt.restart = true;
+	pt.restart = newMap;
 
 	common->Printf( "path tracer: %s: %d triangles, %d materials, %d textures, %d lights, %d msec\n", world->mapName.c_str(),
 					w.num_triangles, w.num_materials, w.num_textures, w.num_lights, Sys_Milliseconds() - start );
+	common->Printf( "path tracer: %d triangles of %d entities gathered in %d msec, %d found to move so far\n", pt.triMaterials.Num(), pt.spans.Num(), pt.gatherMsec, pt.numFound );
+}
+
+/*
+================
+PT_MovingFor
+
+The place among the materials of what moves of this one, or -1 for a
+surface that is not traced. The front end asks; the tracer is given the
+material when the view is drawn.
+================
+*/
+static int PT_MovingFor( const idMaterial *shader, unsigned int flags ) {
+	int i;
+
+	if ( !shader || !shader->IsDrawn() || shader->Coverage() == MC_TRANSLUCENT || shader->Deform() != DFRM_NONE ) {
+		return -1;
+	}
+	if ( !shader->SurfaceCastsShadow() ) {
+		flags |= PT_MAT_NO_SHADOW;
+	}
+	for ( i = 0; i < pt.moving.Num(); i++ ) {
+		if ( pt.moving[i].shader == shader && pt.moving[i].flags == flags ) {
+			return i;
+		}
+	}
+	ptMoving_t moving;
+	moving.shader = shader;
+	moving.flags = flags;
+	return pt.moving.Append( moving );
+}
+
+// makes a list longer without making room for it a little at a time
+template< class type >
+static void PT_Grow( idList<type> &list, int num ) {
+	if ( num > list.NumAllocated() ) {
+		list.Resize( num + num / 2 + 4096 );
+	}
+	list.SetNum( num, false );
+}
+
+/*
+================
+PT_GatherView
+
+The front end's part: the triangles of every entity's model, as they stand
+for the view that is about to be handed to the back end.
+================
+*/
+void PT_GatherView( void ) {
+	viewDef_t			*viewDef = tr.viewDef;
+	idRenderWorldLocal	*world;
+	int					i, j, k;
+
+	if ( !viewDef || viewDef->isSubview || !r_pathTrace.GetBool() || !viewDef->renderWorld ) {
+		return;
+	}
+	world = viewDef->renderWorld;
+	if ( world->mapName.Length() == 0 ) {
+		return;
+	}
+
+	const int start = Sys_Milliseconds();
+
+	// where everything was in the view before
+	pt.lastPositions.SetNum( pt.positions.Num(), false );
+	if ( pt.positions.Num() ) {
+		memcpy( pt.lastPositions.Ptr(), pt.positions.Ptr(), pt.positions.Num() * sizeof( float ) );
+	}
+	pt.prevSpans.SetNum( pt.spans.Num(), false );
+	if ( pt.spans.Num() ) {
+		memcpy( pt.prevSpans.Ptr(), pt.spans.Ptr(), pt.spans.Num() * sizeof( ptSpan_t ) );
+	}
+	int *spanOf = (int *) _alloca( ( world->entityDefs.Num() + 1 ) * sizeof( int ) );
+	for ( i = 0; i < world->entityDefs.Num(); i++ ) {
+		spanOf[i] = -1;
+	}
+	for ( i = 0; i < pt.prevSpans.Num(); i++ ) {
+		if ( pt.prevSpans[i].defIndex < world->entityDefs.Num() ) {
+			spanOf[pt.prevSpans[i].defIndex] = i;
+		}
+	}
+
+	pt.positions.SetNum( 0, false );
+	pt.uvs.SetNum( 0, false );
+	pt.normals.SetNum( 0, false );
+	pt.prevPositions.SetNum( 0, false );
+	pt.triMaterials.SetNum( 0, false );
+	pt.spans.SetNum( 0, false );
+	pt.gatheredFor = viewDef;
+
+	// whether what was handed over is this map's: if not it is about to be, and what will be then is left out here
+	const bool knowsWorld = pt.bakedFor == world && pt.mapTimeStamp == world->mapTimeStamp && pt.mapName == world->mapName;
+	const int numBaked = knowsWorld ? Min( pt.baked.Num(), world->entityDefs.Num() ) : 0;
+	if ( r_ptEntities.IsModified() ) {
+		r_ptEntities.ClearModified();
+		pt.world = NULL;
+	}
+
+	const int	viewID = viewDef->renderView.viewID;
+	const bool	list = pt.listEntities;
+	pt.listEntities = false;
+	for ( i = 0; i < world->entityDefs.Num(); i++ ) {
+		idRenderEntityLocal *def = world->entityDefs[i];
+
+		// what was handed over with the world, if it is still as it was then
+		if ( i < numBaked && pt.baked[i].model ) {
+			const ptBaked_t &baked = pt.baked[i];
+			if ( def && def->parms.hModel == baked.model && def->parms.customSkin == baked.customSkin && def->parms.customShader == baked.customShader
+					&& def->parms.origin.Compare( baked.origin, 0.01f ) && def->parms.axis.Compare( baked.axis, 0.0001f )
+					&& !def->parms.callback ) {
+				if ( list && ( def->parms.origin - viewDef->renderView.vieworg ).Length() < 512.0f ) {
+					common->Printf( "%5i with the world       %s\n", i, baked.model->Name() );
+				}
+				continue;
+			}
+			// it does not stay: the world is handed over again, without it
+			if ( pt.moves.Num() <= i ) {
+				const int was = pt.moves.Num();
+				pt.moves.SetNum( world->entityDefs.Num(), true );
+				memset( &pt.moves[was], 0, ( pt.moves.Num() - was ) * sizeof( bool ) );
+			}
+			pt.moves[i] = true;
+			pt.numFound++;
+			pt.world = NULL;
+		}
+		if ( !def || !def->parms.hModel || ( !knowsWorld && PT_Stays( def, i ) ) ) {
+			continue;
+		}
+		if ( idStr::Cmpn( def->parms.hModel->Name(), "_area", 5 ) == 0 ) {
+			continue;
+		}
+		if ( !r_ptEntities.GetBool() ) {
+			continue;
+		}
+		// the player's own body, which the player does not see, and what only the player sees
+		if ( def->parms.suppressSurfaceInViewID && def->parms.suppressSurfaceInViewID == viewID ) {
+			continue;
+		}
+		if ( def->parms.allowSurfaceInViewID && def->parms.allowSurfaceInViewID != viewID ) {
+			continue;
+		}
+
+		// posed, if it is one that is: the game is asked as it would be were it in view
+		const idRenderModel *model = R_EntityDefDynamicModel( def );
+		if ( !model ) {
+			continue;
+		}
+
+		unsigned int flags = 0;
+		if ( def->parms.noShadow ) {
+			flags |= PT_MAT_NO_SHADOW;
+		}
+		if ( def->parms.weaponDepthHack ) {
+			flags |= PT_MAT_HELD;
+		}
+
+		int numModelTris = 0;
+		ptSpan_t span;
+		span.defIndex = i;
+		span.first = pt.triMaterials.Num();
+
+		const idVec3 &origin = def->parms.origin;
+		const idMat3 &axis = def->parms.axis;
+		for ( j = 0; j < model->NumSurfaces(); j++ ) {
+			const modelSurface_t	*surf = model->Surface( j );
+			srfTriangles_t			*tri = surf->geometry;
+
+			if ( !tri || tri->numVerts <= 0 || tri->numIndexes < 3 || !tri->verts || !tri->indexes ) {
+				continue;
+			}
+			numModelTris += tri->numIndexes / 3;
+			const idMaterial *shader = R_RemapShaderBySkin( surf->shader, def->parms.customSkin, def->parms.customShader );
+			const int material = PT_MovingFor( shader, flags );
+			if ( material < 0 ) {
+				if ( list && ( origin - viewDef->renderView.vieworg ).Length() < 512.0f ) {
+					common->Printf( "      left out: %s\n", shader ? shader->GetName() : "no material" );
+				}
+				continue;
+			}
+			if ( !tri->tangentsCalculated ) {
+				R_DeriveTangents( tri );		// a posed model's normals are worked out when they are first wanted
+			}
+
+			const int numTris = tri->numIndexes / 3;
+			int at = pt.triMaterials.Num();
+			PT_Grow( pt.triMaterials, at + numTris );
+			PT_Grow( pt.positions, ( at + numTris ) * 9 );
+			PT_Grow( pt.normals, ( at + numTris ) * 9 );
+			PT_Grow( pt.uvs, ( at + numTris ) * 6 );
+			for ( k = 0; k < numTris; k++, at++ ) {
+				float *p = &pt.positions[at * 9], *n = &pt.normals[at * 9], *uv = &pt.uvs[at * 6];
+
+				pt.triMaterials[at] = material;
+				// the engine's triangles face the other way round from the tracer's
+				for ( int c = 0; c < 3; c++ ) {
+					const idDrawVert	&v = tri->verts[ tri->indexes[k * 3 + 2 - c] ];
+					const idVec3		xyz = origin + v.xyz * axis;
+					const idVec3		normal = v.normal * axis;
+
+					p[c * 3] = xyz.x;		p[c * 3 + 1] = xyz.y;		p[c * 3 + 2] = xyz.z;
+					n[c * 3] = normal.x;	n[c * 3 + 1] = normal.y;	n[c * 3 + 2] = normal.z;
+					uv[c * 2] = v.st.x;		uv[c * 2 + 1] = v.st.y;
+				}
+			}
+		}
+
+		span.count = pt.triMaterials.Num() - span.first;
+		if ( span.count > 0 ) {
+			pt.spans.Append( span );
+		}
+		if ( list && ( origin - viewDef->renderView.vieworg ).Length() < 512.0f ) {
+			common->Printf( "%5i %6i of %6i tris  %s%s\n", i, span.count, numModelTris, def->parms.hModel->Name(), ( flags & PT_MAT_HELD ) ? " (held)" : "" );
+		}
+	}
+
+	// where each triangle was in the view before, if the same entity had as many then
+	pt.prevPositions.SetNum( pt.positions.Num(), false );
+	for ( i = 0; i < pt.spans.Num(); i++ ) {
+		const ptSpan_t	&span = pt.spans[i];
+		const int		was = spanOf[span.defIndex];
+		const float		*from = &pt.positions[span.first * 9];
+
+		if ( was >= 0 && pt.prevSpans[was].count == span.count && ( pt.prevSpans[was].first + span.count ) * 9 <= pt.lastPositions.Num() ) {
+			from = &pt.lastPositions[pt.prevSpans[was].first * 9];
+		}
+		memcpy( &pt.prevPositions[span.first * 9], from, span.count * 9 * sizeof( float ) );
+	}
+
+	pt.gatherMsec = Sys_Milliseconds() - start;
+}
+
+/*
+================
+PT_MovingMaterials
+
+The back end's part of the same: the tracer's material for each material of
+what moves that it has not yet been given.
+================
+*/
+static void PT_MovingMaterials( void ) {
+	int i, j;
+
+	for ( i = pt.movingMaterials.Num(); i < pt.moving.Num(); i++ ) {
+		const idMaterial	*shader = pt.moving[i].shader;
+		bool				glows, holes;
+		pt_material_t		material;
+		const idImage		*image = PT_ReadStages( shader, glows, holes );
+
+		memset( &material, 0, sizeof( material ) );
+		material.texture = -1;
+		material.normal_texture = -1;
+		material.anim_next = -1;
+		material.alpha = 1.0f;
+		material.roughness = 0.7f;
+		material.flags = pt.moving[i].flags;
+		if ( holes ) {
+			material.flags |= PT_MAT_ALPHA_TEST;
+		}
+		if ( image ) {
+			for ( j = 0; j < pt.movingImages.Num(); j++ ) {
+				if ( pt.movingImages[j] == image ) {
+					break;
+				}
+			}
+			if ( j == pt.movingImages.Num() ) {
+				byte	*pic = NULL;
+				int		width = 0, height = 0, handle = -1;
+
+				R_LoadImageProgram( image->imgName, &pic, &width, &height, NULL );
+				if ( pic && width > 0 && height > 0 ) {
+					pt_texture_t texture;
+					texture.width = width;
+					texture.height = height;
+					texture.pixels = (const uint32_t *) pic;
+					handle = pt.backend->texture_create( pt.backend, &texture );
+				}
+				if ( pic ) {
+					R_StaticFree( pic );
+				}
+				pt.movingImages.Append( image );
+				pt.movingTextures.Append( handle );
+			}
+			material.texture = pt.movingTextures[j];
+		}
+		if ( glows ) {
+			// not lit by the game's lights: it shows as it is painted, so it glows
+			material.flags |= PT_MAT_EMIT_TEXTURE;
+			material.emission[0] = material.emission[1] = material.emission[2] = 0.5f;
+		}
+		pt.movingMaterials.Append( material );
+	}
 }
 
 /*
@@ -673,6 +1102,15 @@ PT_Reload_f
 */
 void PT_Reload_f( const idCmdArgs &args ) {
 	pt.world = NULL;
+}
+
+/*
+================
+PT_ListEntities_f
+================
+*/
+void PT_ListEntities_f( const idCmdArgs &args ) {
+	pt.listEntities = true;
 }
 
 /*
@@ -736,6 +1174,17 @@ bool PT_DrawView( void ) {
 	memset( &scene, 0, sizeof( scene ) );
 	scene.lights = pt.frameLights.Ptr();
 	scene.num_lights = pt.frameLights.Num();
+	if ( pt.gatheredFor == viewDef && pt.triMaterials.Num() > 0 ) {
+		PT_MovingMaterials();
+		scene.materials = pt.movingMaterials.Ptr();
+		scene.num_materials = pt.movingMaterials.Num();
+		scene.positions = pt.positions.Ptr();
+		scene.uvs = pt.uvs.Ptr();
+		scene.normals = pt.normals.Ptr();
+		scene.prev_positions = pt.prevPositions.Ptr();
+		scene.tri_materials = pt.triMaterials.Ptr();
+		scene.num_triangles = pt.triMaterials.Num();
+	}
 	view.scene = &scene;
 	view.light_scales = pt.lightScales.Ptr();
 	view.num_light_scales = pt.worldLights.Num();

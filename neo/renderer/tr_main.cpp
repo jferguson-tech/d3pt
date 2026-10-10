@@ -1156,6 +1156,9 @@ void R_RenderView( viewDef_t *parms ) {
 	}
 
 	// add the rendering commands for this viewDef
+	// what moves in it, for the path tracer
+	PT_GatherView();
+
 	R_AddDrawViewCmd( parms );
 
 	// restore view in case we are a subview
