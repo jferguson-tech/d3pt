@@ -81,7 +81,8 @@ struct Material
 	int		caustic_map;
 	uint	bits;
 	int		foam_map;
-	uint	pad0, pad1;
+	uint	specular_map;		// slot + 1 of what it reflects head on, 0 = none
+	uint	pad1;
 };
 
 struct Light
@@ -1107,6 +1108,14 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	{
 		s.kd = vec3(0.0);
 		s.f0 = vec3(0.0);
+	}
+	else if (mat.specular_map != 0u)
+	{
+		// a matte colour and a colour it shines in, each painted: see
+		// pt_material_t's specular_texture
+		s.f0 = ToLinear(Texel(int(mat.specular_map) - 1, uv, smooth_it).rgb);
+		s.kd = min(s.colour, vec3(1.0) - s.f0);
+		s.metallic = 0.0;
 	}
 	else
 	{

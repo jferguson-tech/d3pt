@@ -153,7 +153,8 @@ struct GpuMaterial
 	int32_t		wave_map, caustic_map;
 	uint32_t	bits;
 	int32_t		foam_map;
-	uint32_t	pad[2];
+	uint32_t	specular_map;	// slot + 1, 0 = none
+	uint32_t	pad;
 };
 
 struct GpuLight
@@ -1572,6 +1573,7 @@ void SetMaterial(const RtxBackend *s, GpuMaterial &dest, const pt_material_t &in
 	out.texture = used(slot(in.texture));
 	out.normal_texture = used(slot(in.normal_texture));
 	out.emission_map = used(slot(in.emission_texture - 1));
+	out.specular_map = (uint32_t)(used(slot(in.specular_texture - 1)) + 1);
 	out.wave_map = used(in.wave_map - 1);			// these three are handles
 	out.caustic_map = used(in.caustic_map - 1);
 	out.foam_map = used(in.foam_map - 1);
