@@ -780,7 +780,9 @@ void idEvent::RestoreTrace( idRestoreGame *savefile, trace_t &trace ) {
 	savefile->ReadVec3( trace.c.normal );
 	savefile->ReadFloat( trace.c.dist );
 	savefile->ReadInt( trace.c.contents );
-	savefile->ReadInt( (int&)trace.c.material );
+	int wasSet;		// a pointer is wider than the int in the file
+	savefile->ReadInt( wasSet );
+	trace.c.material = (const idMaterial *)(intptr_t)wasSet;
 	savefile->ReadInt( trace.c.contents );
 	savefile->ReadInt( trace.c.modelFeature );
 	savefile->ReadInt( trace.c.trmFeature );
@@ -804,7 +806,7 @@ void idEvent::SaveTrace( idSaveGame *savefile, const trace_t &trace ) {
 	savefile->WriteVec3( trace.c.normal );
 	savefile->WriteFloat( trace.c.dist );
 	savefile->WriteInt( trace.c.contents );
-	savefile->WriteInt( (int&)trace.c.material );
+	savefile->WriteInt( trace.c.material != NULL );
 	savefile->WriteInt( trace.c.contents );
 	savefile->WriteInt( trace.c.modelFeature );
 	savefile->WriteInt( trace.c.trmFeature );

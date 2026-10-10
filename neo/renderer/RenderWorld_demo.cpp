@@ -32,6 +32,20 @@ If you have questions concerning this license or the applicable additional terms
 
 //#define WRITE_GUIS
 
+/*
+================
+ReadDemoPointer
+
+A pointer in a demo file is 32 bits that are only looked at for being zero or not.
+================
+*/
+static void *ReadDemoPointer( void ) {
+	int wasSet = 0;
+
+	session->readDemo->ReadInt( wasSet );
+	return (void *)(intptr_t)wasSet;
+}
+
 typedef struct {
 	int		version;
 	int		sizeofRenderEntity;
@@ -140,9 +154,14 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		for ( int i = 0; i < MAX_GLOBAL_SHADER_PARMS; i++ )
 			readDemo->ReadFloat( renderView->shaderParms[i] );
 
-		if ( !readDemo->ReadInt( (int&)renderView->globalMaterial ) ) {
-			 return false;
-		 }
+		{
+			int wasSet = 0;
+			int got = readDemo->ReadInt( wasSet );
+			*(void **)&renderView->globalMaterial = (void *)(intptr_t)wasSet;
+			if ( !got ) {
+				return false;
+			}
+		}
 												 
 		if ( r_showDemo.GetBool() ) {
 			common->Printf( "DC_RENDERVIEW: %i\n", renderView->time );
@@ -355,7 +374,7 @@ void	idRenderWorldLocal::WriteRenderView( const renderView_t *renderView ) {
 	session->writeDemo->WriteInt( renderView->time );
 	for ( i = 0; i < MAX_GLOBAL_SHADER_PARMS; i++ )
 		session->writeDemo->WriteFloat( renderView->shaderParms[i] );
-	session->writeDemo->WriteInt( (int&)renderView->globalMaterial );
+	session->writeDemo->WriteInt( renderView->globalMaterial != NULL );
 	
 	if ( r_showDemo.GetBool() ) {
 		common->Printf( "write DC_RENDERVIEW: %i\n", renderView->time );
@@ -438,12 +457,12 @@ void	idRenderWorldLocal::WriteRenderLight( qhandle_t handle, const renderLight_t
 	session->writeDemo->WriteVec3( light->up );
 	session->writeDemo->WriteVec3( light->start );
 	session->writeDemo->WriteVec3( light->end );
-	session->writeDemo->WriteInt( (int&)light->prelightModel );
+	session->writeDemo->WriteInt( light->prelightModel != NULL );
 	session->writeDemo->WriteInt( light->lightId );
-	session->writeDemo->WriteInt( (int&)light->shader );
+	session->writeDemo->WriteInt( light->shader != NULL );
 	for ( int i = 0; i < MAX_ENTITY_SHADER_PARMS; i++)
 		session->writeDemo->WriteFloat( light->shaderParms[i] );
-	session->writeDemo->WriteInt( (int&)light->referenceSound );
+	session->writeDemo->WriteInt( light->referenceSound != NULL );
 
 	if ( light->prelightModel ) {
 		session->writeDemo->WriteHashString( light->prelightModel->Name() );
@@ -490,12 +509,12 @@ void	idRenderWorldLocal::ReadRenderLight( ) {
 	session->readDemo->ReadVec3( light.up );
 	session->readDemo->ReadVec3( light.start );
 	session->readDemo->ReadVec3( light.end );
-	session->readDemo->ReadInt( (int&)light.prelightModel );
+	*(void **)&light.prelightModel = ReadDemoPointer();
 	session->readDemo->ReadInt( light.lightId );
-	session->readDemo->ReadInt( (int&)light.shader );
+	*(void **)&light.shader = ReadDemoPointer();
 	for ( int i = 0; i < MAX_ENTITY_SHADER_PARMS; i++)
 		session->readDemo->ReadFloat( light.shaderParms[i] );
-	session->readDemo->ReadInt( (int&)light.referenceSound );
+	*(void **)&light.referenceSound = ReadDemoPointer();
 	if ( light.prelightModel ) {
 		light.prelightModel = renderModelManager->FindModel( session->readDemo->ReadHashString() );
 	}
@@ -532,30 +551,30 @@ void	idRenderWorldLocal::WriteRenderEntity( qhandle_t handle, const renderEntity
 	session->writeDemo->WriteInt( DC_UPDATE_ENTITYDEF );
 	session->writeDemo->WriteInt( handle );
 	
-	session->writeDemo->WriteInt( (int&)ent->hModel );
+	session->writeDemo->WriteInt( ent->hModel != NULL );
 	session->writeDemo->WriteInt( ent->entityNum );
 	session->writeDemo->WriteInt( ent->bodyId );
 	session->writeDemo->WriteVec3( ent->bounds[0] );
 	session->writeDemo->WriteVec3( ent->bounds[1] );
-	session->writeDemo->WriteInt( (int&)ent->callback );
-	session->writeDemo->WriteInt( (int&)ent->callbackData );
+	session->writeDemo->WriteInt( ent->callback != NULL );
+	session->writeDemo->WriteInt( ent->callbackData != NULL );
 	session->writeDemo->WriteInt( ent->suppressSurfaceInViewID );
 	session->writeDemo->WriteInt( ent->suppressShadowInViewID );
 	session->writeDemo->WriteInt( ent->suppressShadowInLightID );
 	session->writeDemo->WriteInt( ent->allowSurfaceInViewID );
 	session->writeDemo->WriteVec3( ent->origin );
 	session->writeDemo->WriteMat3( ent->axis );
-	session->writeDemo->WriteInt( (int&)ent->customShader );
-	session->writeDemo->WriteInt( (int&)ent->referenceShader );
-	session->writeDemo->WriteInt( (int&)ent->customSkin );
-	session->writeDemo->WriteInt( (int&)ent->referenceSound );
+	session->writeDemo->WriteInt( ent->customShader != NULL );
+	session->writeDemo->WriteInt( ent->referenceShader != NULL );
+	session->writeDemo->WriteInt( ent->customSkin != NULL );
+	session->writeDemo->WriteInt( ent->referenceSound != NULL );
 	for ( int i = 0; i < MAX_ENTITY_SHADER_PARMS; i++ )
 		session->writeDemo->WriteFloat( ent->shaderParms[i] );
 	for ( int i = 0; i < MAX_RENDERENTITY_GUI; i++ )
-		session->writeDemo->WriteInt( (int&)ent->gui[i] );
-	session->writeDemo->WriteInt( (int&)ent->remoteRenderView );
+		session->writeDemo->WriteInt( ent->gui[i] != NULL );
+	session->writeDemo->WriteInt( ent->remoteRenderView != NULL );
 	session->writeDemo->WriteInt( ent->numJoints );
-	session->writeDemo->WriteInt( (int&)ent->joints );
+	session->writeDemo->WriteInt( ent->joints != NULL );
 	session->writeDemo->WriteFloat( ent->modelDepthHack );
 	session->writeDemo->WriteBool( ent->noSelfShadow );
 	session->writeDemo->WriteBool( ent->noShadow );
@@ -631,32 +650,32 @@ void	idRenderWorldLocal::ReadRenderEntity() {
 		common->Error( "ReadRenderEntity: index < 0" );
 	}
 
-	session->readDemo->ReadInt( (int&)ent.hModel );
+	*(void **)&ent.hModel = ReadDemoPointer();
 	session->readDemo->ReadInt( ent.entityNum );
 	session->readDemo->ReadInt( ent.bodyId );
 	session->readDemo->ReadVec3( ent.bounds[0] );
 	session->readDemo->ReadVec3( ent.bounds[1] );
-	session->readDemo->ReadInt( (int&)ent.callback );
-	session->readDemo->ReadInt( (int&)ent.callbackData );
+	*(void **)&ent.callback = ReadDemoPointer();
+	*(void **)&ent.callbackData = ReadDemoPointer();
 	session->readDemo->ReadInt( ent.suppressSurfaceInViewID );
 	session->readDemo->ReadInt( ent.suppressShadowInViewID );
 	session->readDemo->ReadInt( ent.suppressShadowInLightID );
 	session->readDemo->ReadInt( ent.allowSurfaceInViewID );
 	session->readDemo->ReadVec3( ent.origin );
 	session->readDemo->ReadMat3( ent.axis );
-	session->readDemo->ReadInt( (int&)ent.customShader );
-	session->readDemo->ReadInt( (int&)ent.referenceShader );
-	session->readDemo->ReadInt( (int&)ent.customSkin );
-	session->readDemo->ReadInt( (int&)ent.referenceSound );
+	*(void **)&ent.customShader = ReadDemoPointer();
+	*(void **)&ent.referenceShader = ReadDemoPointer();
+	*(void **)&ent.customSkin = ReadDemoPointer();
+	*(void **)&ent.referenceSound = ReadDemoPointer();
 	for ( i = 0; i < MAX_ENTITY_SHADER_PARMS; i++ ) {
 		session->readDemo->ReadFloat( ent.shaderParms[i] );
 	}
 	for ( i = 0; i < MAX_RENDERENTITY_GUI; i++ ) {
-		session->readDemo->ReadInt( (int&)ent.gui[i] );
+		*(void **)&ent.gui[i] = ReadDemoPointer();
 	}
-	session->readDemo->ReadInt( (int&)ent.remoteRenderView );
+	*(void **)&ent.remoteRenderView = ReadDemoPointer();
 	session->readDemo->ReadInt( ent.numJoints );
-	session->readDemo->ReadInt( (int&)ent.joints );
+	*(void **)&ent.joints = ReadDemoPointer();
 	session->readDemo->ReadFloat( ent.modelDepthHack );
 	session->readDemo->ReadBool( ent.noSelfShadow );
 	session->readDemo->ReadBool( ent.noShadow );

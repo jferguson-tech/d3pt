@@ -90,7 +90,7 @@ void idGuiModel::WriteToDemo( idDemoFile *demo ) {
 	for ( j = 0 ; j < i ; j++ ) {
 		guiModelSurface_t	*surf = &surfaces[j];
 		
-		demo->WriteInt( (int&)surf->material );
+		demo->WriteInt( surf->material != NULL );
 		demo->WriteFloat( surf->color[0] );
 		demo->WriteFloat( surf->color[1] );
 		demo->WriteFloat( surf->color[2] );
@@ -140,7 +140,9 @@ void idGuiModel::ReadFromDemo( idDemoFile *demo ) {
 	for ( j = 0 ; j < i ; j++ ) {
 		guiModelSurface_t	*surf = &surfaces[j];
 		
-		demo->ReadInt( (int&)surf->material );
+		int wasSet;		// a pointer is wider than the int in the file
+		demo->ReadInt( wasSet );
+		surf->material = (const idMaterial *)(intptr_t)wasSet;
 		demo->ReadFloat( surf->color[0] );
 		demo->ReadFloat( surf->color[1] );
 		demo->ReadFloat( surf->color[2] );
