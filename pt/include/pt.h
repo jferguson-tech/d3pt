@@ -115,6 +115,16 @@ typedef struct pt_material_s
 								   tangent space normal (x along u, y along v),
 								   alpha replaces roughness. See also
 								   PT_MAT_METAL_TEXTURE */
+	int			specular_texture;	/* 0 for none, else 1 + a texture, numbered as
+								   texture is: the colour the surface reflects,
+								   seen head on, in place of what metallic and
+								   the texture would make it. The texture is then
+								   its matte colour alone, less only what would
+								   make the two together reflect more light than
+								   falls on them. For materials painted for an
+								   engine that lights a surface as a matte colour
+								   plus a highlight of a colour of its own. RTX
+								   backend only */
 	int			anim_next;		/* world only: the material shown one animation
 								   step later, or -1 */
 	int			wave_map;		/* liquids: texture_create handle + 1 of a wave

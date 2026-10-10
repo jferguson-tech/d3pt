@@ -54,8 +54,8 @@ file is what stands between the two:
   been. Everything 2D is then drawn over it by OpenGL as it always was.
 
   materials: the game lights a surface through three pictures, its colour,
-  its bumps and how brightly it shines; the tracer wants its colour, its
-  bumps, how rough it is and how far it is metal. See PT_ReadMaterial.
+  its bumps and the colour it shines in, and the tracer is given the same
+  three. See PT_ReadMaterial.
 
 What is not there yet: translucent surfaces, particles, surfaces the game
 bends as it draws them, and all that the lights' own pictures do.
@@ -81,6 +81,11 @@ idCVar r_ptLightScale( "r_ptLightScale", "2", CVAR_RENDERER | CVAR_FLOAT | CVAR_
 idCVar r_ptDenoise( "r_ptDenoise", "4", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: passes of the spatial filter, 0-4" );
 idCVar r_ptEntities( "r_ptEntities", "1", CVAR_RENDERER | CVAR_BOOL, "path tracer: trace the models of entities: monsters, doors, the weapon and all else that is not the map itself" );
 idCVar r_ptMaterials( "r_ptMaterials", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: read the bump and specular maps of materials; 0: their colour alone, all of them matte; needs reloadPathTrace" );
+idCVar r_ptSpecular( "r_ptSpecular", "2.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much of the light a surface reflects, for a white texel of its specular map; needs reloadPathTrace" );
+idCVar r_ptGloss( "r_ptGloss", "0.45", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how rough a surface with a specular map is, 0.05 a mirror to 1; it sets how wide a highlight is; needs reloadPathTrace" );
+idCVar r_ptTonemap( "r_ptTonemap", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: how light is turned into a picture: 0 filmic, 1 neutral, 2 clipped as the game clips it" );
+idCVar r_ptContrast( "r_ptContrast", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: contrast of the picture, 1 = unchanged" );
+idCVar r_ptSaturation( "r_ptSaturation", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: saturation of the picture, 1 = unchanged" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
 
 // OpenGL's side of opening the tracer's picture (GL_EXT_memory_object, GL_EXT_memory_object_win32)
@@ -136,6 +141,7 @@ static struct {
 	bool					restart;
 	bool					listLights;			// listPathTraceLights: say what the next view's are
 	bool					listEntities;		// listPathTraceEntities: the same of its entities
+	bool					forgetMoving;		// reloadPathTrace: the materials of what moves are to be read again
 
 	// what moves, gathered by the front end for one view
 	const viewDef_t *		gatheredFor;
@@ -151,6 +157,7 @@ static struct {
 	idList<const idMaterial *>	movingRead;		// the game's materials whose pictures the tracer has
 	idList<int>				movingBase;			// and its handles for the two it was given for each, or -1
 	idList<int>				movingDetail;
+	idList<int>				movingShine;
 	int						gatherMsec;
 } pt;
 
@@ -161,6 +168,7 @@ typedef struct {
 	idList<const idMaterial *>	read;			// the game's materials whose pictures are among the textures
 	idList<int>					readBase;		// and which two are each one's, or -1
 	idList<int>					readDetail;
+	idList<int>					readShine;
 	idList<pt_material_t>		materials;
 	idList<const idMaterial *>	shaders;		// of each material
 	idList<bool>				noShadows;		// and whether it is for a model that casts no shadow
@@ -209,6 +217,7 @@ void PT_Shutdown( void ) {
 	pt.movingRead.Clear();
 	pt.movingBase.Clear();
 	pt.movingDetail.Clear();
+	pt.movingShine.Clear();
 	pt.mapName.Clear();
 	memset( &pt, 0, sizeof( pt ) );
 }
@@ -299,8 +308,10 @@ static bool PT_Start( void ) {
 typedef struct {
 	byte	*base;			// its colour, and in alpha its holes; NULL for plain white
 	int		baseWidth, baseHeight;
-	byte	*detail;		// the normal's x and y, how far it is metal, how rough it is; NULL for none
+	byte	*detail;		// its normal, and in alpha how rough it is; NULL for none
 	int		detailWidth, detailHeight;
+	byte	*shine;			// the colour it reflects head on; NULL for none
+	int		shineWidth, shineHeight;
 	bool	glows;			// it is shown unlit
 	bool	holes;			// base's alpha cuts it out
 } ptRead_t;
@@ -333,16 +344,18 @@ static byte *PT_ReadImage( const idImage *image, int &width, int &height ) {
 PT_ReadMaterial
 
 The game lights a surface through a picture of its colour (diffuse), one of
-its bumps (a normal map) and one of how brightly and in what colour it
-shines back at a light (specular), which it draws with one fixed, fairly
-wide highlight. The tracer wants a colour, a normal, how rough the surface
-is and how far it is metal, and has no specular colour of its own: a metal
-reflects in its colour and nothing else reflects more than a little.
+its bumps (a normal map) and one of the colour it shines back at a light in
+(specular): what is seen is the colour times the light, plus twice the
+specular colour times a highlight of one fixed width.
 
-So what shines brightly is taken for metal and for smoother, and a metal's
-colour has what it shines with added to it, since that is most of what it
-is seen by. What shines little is left as it is, and rough. These are
-guesses at what the artists meant, not what they painted.
+The tracer is given the same three. The specular picture is what the
+surface reflects head on, and one roughness for every surface that has one
+stands for the game's one highlight: r_ptGloss, which with r_ptSpecular was
+set by eye, against the game's own picture, so that a light makes a
+highlight about as wide and as bright as the game's. (The specular picture
+is taken to be painted for the screen, as the colour is, which makes it
+darker than its numbers: hence a scale above 1.) What the tracer adds is that such a surface reflects the room as
+well as the lights.
 
 Holes: the game cuts them by any stage it likes, and a monster's are cut by
 a picture of its own that burns it away when it dies. Only holes cut by the
@@ -382,60 +395,49 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 		return;
 	}
 
-	int		bumpWidth, bumpHeight, shineWidth, shineHeight;
-	byte	*bumps = bump ? PT_ReadImage( bump->texture.image, bumpWidth, bumpHeight ) : NULL;
-	byte	*shine = specular ? PT_ReadImage( specular->texture.image, shineWidth, shineHeight ) : NULL;
-	if ( !bumps && !shine ) {
-		return;
+	if ( specular ) {
+		read.shine = PT_ReadImage( specular->texture.image, read.shineWidth, read.shineHeight );
 	}
-
-	// how far a texel is metal, and how rough, by how brightly it shines
-	const float metalFrom = 0.25f, metalTo = 0.65f;
-	const float roughDull = 0.7f, roughBright = 0.3f, roughNone = 0.85f;
-
-	// the detail: the size of the bumps if there are any
-	read.detailWidth = bumps ? bumpWidth : shineWidth;
-	read.detailHeight = bumps ? bumpHeight : shineHeight;
-	read.detail = (byte *) R_StaticAlloc( read.detailWidth * read.detailHeight * 4 );
-	for ( int y = 0; y < read.detailHeight; y++ ) {
-		for ( int x = 0; x < read.detailWidth; x++ ) {
-			byte	*out = &read.detail[( y * read.detailWidth + x ) * 4];
-			float	metal = 0.0f, rough = roughNone;
-
-			if ( shine ) {
-				const byte	*in = &shine[( ( y * shineHeight / read.detailHeight ) * shineWidth + x * shineWidth / read.detailWidth ) * 4];
-				const float	level = ( in[0] * 0.2126f + in[1] * 0.7152f + in[2] * 0.0722f ) * ( 1.0f / 255.0f );
-				metal = idMath::ClampFloat( 0.0f, 1.0f, ( level - metalFrom ) / ( metalTo - metalFrom ) );
-				rough = roughDull + ( roughBright - roughDull ) * level;
-			}
-			out[0] = bumps ? bumps[( y * bumpWidth + x ) * 4] : 128;
-			out[1] = bumps ? bumps[( y * bumpWidth + x ) * 4 + 1] : 128;
-			out[2] = (byte) ( metal * 255.0f + 0.5f );
-			out[3] = (byte) ( rough * 255.0f + 0.5f );
-		}
-	}
-
-	// a metal's colour: what it is painted with what it shines with
-	if ( shine && read.base ) {
-		for ( int y = 0; y < read.baseHeight; y++ ) {
-			for ( int x = 0; x < read.baseWidth; x++ ) {
-				byte		*out = &read.base[( y * read.baseWidth + x ) * 4];
-				const byte	*in = &shine[( ( y * shineHeight / read.baseHeight ) * shineWidth + x * shineWidth / read.baseWidth ) * 4];
-				const float	level = ( in[0] * 0.2126f + in[1] * 0.7152f + in[2] * 0.0722f ) * ( 1.0f / 255.0f );
-				const float	metal = idMath::ClampFloat( 0.0f, 1.0f, ( level - metalFrom ) / ( metalTo - metalFrom ) );
-
-				for ( int c = 0; c < 3; c++ ) {
-					out[c] = (byte) Min( 255.0f, out[c] + in[c] * metal );
-				}
+	if ( read.shine ) {
+		const float scale = Max( 0.0f, r_ptSpecular.GetFloat() );
+		const int count = read.shineWidth * read.shineHeight * 4;
+		for ( i = 0; i < count; i++ ) {
+			if ( ( i & 3 ) != 3 ) {
+				read.shine[i] = (byte) Min( 255.0f, read.shine[i] * scale );
 			}
 		}
 	}
 
-	if ( bumps ) {
-		R_StaticFree( bumps );
+	// the normal as it is, with how rough the surface is in its alpha
+	if ( bump ) {
+		read.detail = PT_ReadImage( bump->texture.image, read.detailWidth, read.detailHeight );
 	}
-	if ( shine ) {
-		R_StaticFree( shine );
+	if ( !read.detail && read.shine ) {
+		read.detailWidth = read.detailHeight = 4;
+		read.detail = (byte *) R_StaticAlloc( 4 * 4 * 4 );
+		for ( i = 0; i < 4 * 4; i++ ) {
+			read.detail[i * 4] = read.detail[i * 4 + 1] = 128;
+			read.detail[i * 4 + 2] = 255;
+		}
+	}
+	if ( read.detail ) {
+		const byte rough = (byte) ( idMath::ClampFloat( 0.05f, 1.0f, read.shine ? r_ptGloss.GetFloat() : 0.85f ) * 255.0f + 0.5f );
+		const int count = read.detailWidth * read.detailHeight;
+		for ( i = 0; i < count; i++ ) {
+			read.detail[i * 4 + 3] = rough;
+		}
+	}
+}
+
+static void PT_FreeRead( ptRead_t &read ) {
+	if ( read.base ) {
+		R_StaticFree( read.base );
+	}
+	if ( read.detail ) {
+		R_StaticFree( read.detail );
+	}
+	if ( read.shine ) {
+		R_StaticFree( read.shine );
 	}
 }
 
@@ -443,20 +445,18 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 ================
 PT_FillMaterial
 
-The tracer's material for one that was read, given where its two pictures are.
+The tracer's material for one that was read, given where its pictures are.
 ================
 */
-static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int base, int detail, unsigned int flags ) {
+static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int base, int detail, int shine, unsigned int flags ) {
 	memset( &material, 0, sizeof( material ) );
 	material.texture = base;
 	material.normal_texture = detail;
+	material.specular_texture = shine + 1;
 	material.anim_next = -1;
 	material.alpha = 1.0f;
 	material.roughness = 0.85f;
 	material.flags = flags;
-	if ( detail >= 0 ) {
-		material.flags |= PT_MAT_METAL_TEXTURE;
-	}
 	if ( read.holes ) {
 		material.flags |= PT_MAT_ALPHA_TEST;
 	}
@@ -501,29 +501,27 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool
 	}
 	PT_ReadMaterial( shader, read, i == build.read.Num() );
 	if ( i == build.read.Num() ) {
-		pt_texture_t texture;
-		int base = -1, detail = -1;
+		byte	*pixels[3] = { read.base, read.detail, read.shine };
+		int		sizes[3][2] = { { read.baseWidth, read.baseHeight }, { read.detailWidth, read.detailHeight }, { read.shineWidth, read.shineHeight } };
+		int		at[3] = { -1, -1, -1 };
 
-		if ( read.base ) {
-			texture.width = read.baseWidth;
-			texture.height = read.baseHeight;
-			texture.pixels = (const uint32_t *) read.base;
-			build.pixels.Append( read.base );
-			base = build.textures.Append( texture );
-		}
-		if ( read.detail ) {
-			texture.width = read.detailWidth;
-			texture.height = read.detailHeight;
-			texture.pixels = (const uint32_t *) read.detail;
-			build.pixels.Append( read.detail );
-			detail = build.textures.Append( texture );
+		for ( int k = 0; k < 3; k++ ) {
+			if ( pixels[k] ) {
+				pt_texture_t texture;
+				texture.width = sizes[k][0];
+				texture.height = sizes[k][1];
+				texture.pixels = (const uint32_t *) pixels[k];
+				build.pixels.Append( pixels[k] );		// freed when the world has been handed over
+				at[k] = build.textures.Append( texture );
+			}
 		}
 		build.read.Append( shader );
-		build.readBase.Append( base );
-		build.readDetail.Append( detail );
+		build.readBase.Append( at[0] );
+		build.readDetail.Append( at[1] );
+		build.readShine.Append( at[2] );
 	}
 
-	PT_FillMaterial( material, read, build.readBase[i], build.readDetail[i], noShadow ? PT_MAT_NO_SHADOW : 0 );
+	PT_FillMaterial( material, read, build.readBase[i], build.readDetail[i], build.readShine[i], noShadow ? PT_MAT_NO_SHADOW : 0 );
 
 	build.shaders.Append( shader );
 	build.noShadows.Append( noShadow );
@@ -935,6 +933,27 @@ void PT_GatherView( void ) {
 
 	const int start = Sys_Milliseconds();
 
+	// here, before any of them is asked for again
+	if ( pt.forgetMoving ) {
+		pt.forgetMoving = false;
+		if ( pt.backend ) {
+			for ( i = 0; i < pt.movingRead.Num(); i++ ) {
+				const int handles[3] = { pt.movingBase[i], pt.movingDetail[i], pt.movingShine[i] };
+				for ( j = 0; j < 3; j++ ) {
+					if ( handles[j] >= 0 ) {
+						pt.backend->texture_destroy( pt.backend, handles[j] );
+					}
+				}
+			}
+		}
+		pt.moving.SetNum( 0, false );
+		pt.movingMaterials.SetNum( 0, false );
+		pt.movingRead.SetNum( 0, false );
+		pt.movingBase.SetNum( 0, false );
+		pt.movingDetail.SetNum( 0, false );
+		pt.movingShine.SetNum( 0, false );
+	}
+
 	// where everything was in the view before
 	pt.lastPositions.SetNum( pt.positions.Num(), false );
 	if ( pt.positions.Num() ) {
@@ -1107,33 +1126,27 @@ static void PT_MovingMaterials( void ) {
 		}
 		PT_ReadMaterial( shader, read, j == pt.movingRead.Num() );
 		if ( j == pt.movingRead.Num() ) {
-			pt_texture_t texture;
-			int base = -1, detail = -1;
+			byte	*pixels[3] = { read.base, read.detail, read.shine };
+			int		sizes[3][2] = { { read.baseWidth, read.baseHeight }, { read.detailWidth, read.detailHeight }, { read.shineWidth, read.shineHeight } };
+			int		at[3] = { -1, -1, -1 };
 
-			if ( read.base ) {
-				texture.width = read.baseWidth;
-				texture.height = read.baseHeight;
-				texture.pixels = (const uint32_t *) read.base;
-				base = pt.backend->texture_create( pt.backend, &texture );
-			}
-			if ( read.detail ) {
-				texture.width = read.detailWidth;
-				texture.height = read.detailHeight;
-				texture.pixels = (const uint32_t *) read.detail;
-				detail = pt.backend->texture_create( pt.backend, &texture );
+			for ( int k = 0; k < 3; k++ ) {
+				if ( pixels[k] ) {
+					pt_texture_t texture;
+					texture.width = sizes[k][0];
+					texture.height = sizes[k][1];
+					texture.pixels = (const uint32_t *) pixels[k];
+					at[k] = pt.backend->texture_create( pt.backend, &texture );
+				}
 			}
 			pt.movingRead.Append( shader );
-			pt.movingBase.Append( base );
-			pt.movingDetail.Append( detail );
-		}
-		if ( read.base ) {
-			R_StaticFree( read.base );
-		}
-		if ( read.detail ) {
-			R_StaticFree( read.detail );
+			pt.movingBase.Append( at[0] );
+			pt.movingDetail.Append( at[1] );
+			pt.movingShine.Append( at[2] );
+			PT_FreeRead( read );
 		}
 
-		PT_FillMaterial( material, read, pt.movingBase[j], pt.movingDetail[j], pt.moving[i].flags );
+		PT_FillMaterial( material, read, pt.movingBase[j], pt.movingDetail[j], pt.movingShine[j], pt.moving[i].flags );
 		pt.movingMaterials.Append( material );
 	}
 }
@@ -1145,6 +1158,7 @@ PT_Reload_f
 */
 void PT_Reload_f( const idCmdArgs &args ) {
 	pt.world = NULL;
+	pt.forgetMoving = true;
 }
 
 /*
@@ -1248,8 +1262,9 @@ bool PT_DrawView( void ) {
 	view.denoise = r_ptDenoise.GetInteger();
 	view.history = 8;
 	view.reflection_history = 1;
-	view.saturation = 1.0f;
-	view.contrast = 1.0f;
+	view.saturation = r_ptSaturation.GetFloat();
+	view.contrast = r_ptContrast.GetFloat();
+	view.tonemap = r_ptTonemap.GetInteger();
 	if ( PT_VIEW_IS_MEASURE( view.view_mode ) ) {
 		view.exposure = 1.0f;
 		view.auto_exposure = 0;
