@@ -166,6 +166,10 @@ struct GpuLight
 	float		cone_cos;
 	float		edge[3];	// a triangle: from its first corner to its third
 	float		radius;
+	float		box_origin[3];	// a point: its lit volume, if all of box_size is above 0
+	float		no_shadow;		// a point: above 0, nothing stops its light
+	float		box_size[3];
+	float		pad;
 };
 const uint32_t kPointLight = 0xffffff00u;
 
@@ -2159,6 +2163,12 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 			}
 			out.edge[0] = l.reach;		// a point has no edge: its place holds how far it reaches
 			out.edge[1] = l.core;		// and the least distance it is taken to be at
+			for (int a = 0; a < 3; a++)
+			{
+				out.box_origin[a] = l.box_origin[a];
+				out.box_size[a] = l.box_size[a];
+			}
+			out.no_shadow = l.no_shadow ? 1.0f : 0.0f;
 		}
 		else
 		{
@@ -2579,6 +2589,14 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 			lights[i].cone_cos = scene->lights[i].cone_cos;
 			lights[i].edge[0] = std::max(scene->lights[i].reach, 0.0f);
 			lights[i].edge[1] = std::max(scene->lights[i].core, 0.0f);
+			const float *size = scene->lights[i].box_size;
+			if (size[0] > 0.0f && size[1] > 0.0f && size[2] > 0.0f)
+				for (int a = 0; a < 3; a++)
+				{
+					lights[i].box_origin[a] = scene->lights[i].box_origin[a];
+					lights[i].box_size[a] = size[a];
+				}
+			lights[i].no_shadow = scene->lights[i].no_shadow ? 1.0f : 0.0f;
 		}
 	}
 	if (num_lights)
@@ -2742,7 +2760,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.settings_f[1] = std::max(0.0f, view->reflection_rate);
 	f.settings_f[2] = std::max(0.0f, view->wave_strength);
 	f.settings_f[3] = view->fog ? std::min(std::max(view->fog_density, 0.0f), 0.05f) : 0.0f;
-	f.settings2[0] = view->refraction != 0;
+	f.settings2[0] = (view->refraction != 0 ? 1 : 0) | (view->shadow_faces != 0 ? 2 : 0);
 	f.settings2[1] = view->texture_filter != 0;
 	f.settings2[2] = paths;
 	f.settings2[3] = view->debug;

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <utility>
 
 namespace PT_NS {
@@ -143,6 +144,48 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 	const float min_dist2 = cell * cell * 0.75f;	// half the cell diagonal, squared
 	std::vector<std::pair<float, uint32_t>> scored(w.lights.size());
 
+	// Places on the map's surfaces in each cell, a hair off them, from which
+	// to see whether a light with a reach can be seen from the cell at all.
+	// Such lights are an engine's lit volumes, which overlap freely through
+	// walls: in a small room beside a hall, most of the lights that reach
+	// the room are the hall's, and every one drawn that is hidden is a
+	// sample that finds nothing.
+	const int kSeen = 8;
+	bool any_reach = false;
+	for (const Light &l : w.lights)
+		any_reach = any_reach || (l.tri == ~0u && l.reach > 0.0f);
+	std::vector<Vec3> seen_from;
+	std::vector<uint8_t> seen_count;
+	if (any_reach)
+	{
+		seen_from.resize(cells * kSeen);
+		seen_count.assign(cells, 0);
+		std::vector<uint32_t> met(cells, 0);
+		for (const Tri &t : w.tris)
+		{
+			// evenly over the triangle, about half a cell apart
+			const int steps = std::min(8, std::max(1, (int)std::ceil(std::sqrt(t.area * 2.0f) * g.inv_cell * 2.0f)));
+			for (int i = 0; i < steps; i++)
+				for (int j = 0; i + j < steps; j++)
+				{
+					const float a = ((float)i + 1.0f / 3.0f) / (float)steps, b = ((float)j + 1.0f / 3.0f) / (float)steps;
+					const Vec3 at = t.p0 + t.e1 * a + t.e2 * b + t.n * 1.0f;
+					const size_t ci = g.Cell(at);
+					// the first kSeen, then every so often one in place of another, so that they are spread out
+					const uint32_t n = met[ci]++;
+					if (n < (uint32_t)kSeen)
+						seen_from[ci * kSeen + seen_count[ci]++] = at;
+					else if (n % 7u == 0u)
+						seen_from[ci * kSeen + (n / 7u) % (uint32_t)kSeen] = at;
+				}
+		}
+	}
+	const auto solid = [&](uint32_t i)
+	{
+		const Material &m = *w.tris[i].mat;
+		return m.alpha >= 1.0f && !(m.flags & (PT_MAT_NO_SHADOW | PT_MAT_ALPHA_TEST | PT_MAT_SKY));
+	};
+
 	for (size_t ci = 0; ci < cells; ci++)
 	{
 		const size_t cx = ci % g.dims[0], cy = (ci / g.dims[0]) % g.dims[1], cz = ci / ((size_t)g.dims[0] * g.dims[1]);
@@ -150,12 +193,59 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 
 		for (size_t li = 0; li < w.lights.size(); li++)
 		{
-			const Vec3 d = w.lights[li].origin - centre;
-			float score = power[li] / std::max(Dot(d, d), min_dist2);
-			// a light that does not reach any of the cell is not one of its lights
-			const float far = w.lights[li].reach + std::sqrt(min_dist2);
-			if (w.lights[li].reach > 0.0f && Dot(d, d) > far * far)
-				score = 0.0f;
+			const Light &l = w.lights[li];
+			const Vec3 d = l.origin - centre;
+			// what it puts on the cell: see pt_point_light_t's core and reach
+			float score = power[li] / std::max(std::max(Dot(d, d), min_dist2), l.core * l.core);
+			if (l.box_size.x > 0.0f)
+			{
+				// a lit volume: what it puts on the cell's middle, were the
+				// box larger by half the cell, so that a cell it only
+				// touches has it too
+				const Vec3 off = centre - l.box_origin;
+				const float half = std::sqrt(min_dist2);
+				float fade = 1.0f;
+				for (int a = 0; a < 3; a++)
+				{
+					const float u = std::fabs(off[a]) / (l.box_size[a] + half);
+					fade *= u >= 1.0f ? 0.0f : 1.0f - u * u;
+				}
+				score *= fade;
+			}
+			else if (l.reach > 0.0f)
+			{
+				// It fades out towards its reach, and a light that does not
+				// reach any of the cell is not one of its lights. Without
+				// this a large light far off, at the edge of its reach,
+				// outweighs a small one in the cell itself.
+				const float far = l.reach + std::sqrt(min_dist2);
+				float fade = Dot(d, d) / (far * far);
+				fade = fade >= 1.0f ? 0.0f : 1.0f - fade * fade;
+				score *= fade * fade;
+			}
+			// one that can be seen from none of the cell's places keeps a small
+			// chance: they are not all the places there are
+			if (score > 0.0f && l.tri == ~0u && l.reach > 0.0f && !l.no_shadow && any_reach && seen_count[ci])
+			{
+				bool seen = false;
+				for (int i = 0; i < seen_count[ci] && !seen; i++)
+				{
+					Ray ray;
+					ray.o = seen_from[ci * kSeen + i];
+					ray.d = l.origin - ray.o;
+					ray.tmin = 0.0f;
+					ray.tmax = 0.999f;
+					// Hidden only if something stops the light whichever side of
+					// a surface is taken to cast its shadow (pt_view_t's
+					// shadow_faces, which is not known here): a light set
+					// inside a wall is seen from the room under one of the two.
+					const Vec3 d = ray.d;
+					seen = !w.bvh.AnyHit(ray, [&](uint32_t t, float, float) { return solid(t) && Dot(w.tris[t].n, d) > 0.0f; })
+						|| !w.bvh.AnyHit(ray, [&](uint32_t t, float, float) { return solid(t) && Dot(w.tris[t].n, d) < 0.0f; });
+				}
+				if (!seen)
+					score *= 0.02f;
+			}
 			scored[li] = {score, (uint32_t)li};
 		}
 		const size_t keep = std::min((size_t)k, scored.size());
@@ -281,11 +371,16 @@ void BuildSkyChance(World &w)
 {
 	w.sky_chance.clear();
 	const LightGrid &g = w.grid;
-	if (w.sky_cdf.empty() || g.count.empty())
+	if (g.count.empty())
 		return;
 
+	// (none anywhere under no sky, but said of every cell all the same: the
+	// card takes a grid without it for no grid, and then every light is
+	// picked from the whole map)
 	const size_t cells = (size_t)g.dims[0] * g.dims[1] * g.dims[2];
 	w.sky_chance.assign(cells, 0.0f);
+	if (w.sky_cdf.empty())
+		return;
 	const float cell = 1.0f / g.inv_cell;
 	Rng rng(12345);
 
@@ -451,6 +546,11 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		l.dir = Vec3(in->lights[i].direction);
 		l.reach = in->lights[i].reach > 0.0f ? in->lights[i].reach : 0.0f;
 		l.core = in->lights[i].core > 0.0f ? in->lights[i].core : 0.0f;
+		l.box_origin = Vec3(in->lights[i].box_origin);
+		l.box_size = Vec3(in->lights[i].box_size);
+		if (l.box_size.x <= 0.0f || l.box_size.y <= 0.0f || l.box_size.z <= 0.0f)
+			l.box_size = Vec3(0.0f);
+		l.no_shadow = in->lights[i].no_shadow != 0;
 		l.given = i;
 		l.cone_cos = in->lights[i].cone_cos;
 		const float p = Luminance(l.emission) * 4.0f * kPi;
@@ -460,16 +560,24 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		power.push_back(p);
 	}
 
+	// The chance of being picked map wide. A light with a reach has none:
+	// it lights only what is near it, where each cell's list has it, and
+	// picked from anywhere else it is either out of reach or, more often
+	// than not in an engine whose lit volumes pass through walls, hidden,
+	// and then the one path in many that it is drawn for and does light
+	// carries the light of them all.
 	double total = 0;
-	for (float p : power)
-		total += p;
+	for (size_t i = 0; i < power.size(); i++)
+		if (w->lights[i].reach <= 0.0f)
+			total += power[i];
 	double run = 0;
 	w->light_cdf.resize(power.size());
 	for (size_t i = 0; i < power.size(); i++)
 	{
-		w->lights[i].pdf = (float)(power[i] / total);
-		run += power[i];
-		w->light_cdf[i] = (float)(run / total);
+		const float wide = w->lights[i].reach <= 0.0f ? power[i] : 0.0f;
+		w->lights[i].pdf = total > 0 ? (float)(wide / total) : 0.0f;
+		run += wide;
+		w->light_cdf[i] = total > 0 ? (float)(run / total) : 1.0f;
 	}
 
 	// Where the light on each simulated liquid comes from, for the patterns

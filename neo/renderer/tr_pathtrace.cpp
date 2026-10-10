@@ -73,9 +73,13 @@ idCVar r_ptSamples( "r_ptSamples", "1", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCH
 idCVar r_ptBounces( "r_ptBounces", "3", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: bounces after the first surface" );
 idCVar r_ptExposure( "r_ptExposure", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: exposure" );
 idCVar r_ptAutoExposure( "r_ptAutoExposure", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: adapt the exposure to the scene" );
-idCVar r_ptLightScale( "r_ptLightScale", "2", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright a light is for its colour and size" );
+idCVar r_ptLightScale( "r_ptLightScale", "1.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright a light is for its colour and size" );
 idCVar r_ptDenoise( "r_ptDenoise", "4", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: passes of the spatial filter, 0-4" );
 idCVar r_ptEntities( "r_ptEntities", "1", CVAR_RENDERER | CVAR_BOOL, "path tracer: trace the models of entities: monsters, doors, the weapon and all else that is not the map itself" );
+idCVar r_ptLightSamples( "r_ptLightSamples", "8", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: lights weighed at each point before one is chosen, up to 64" );
+idCVar r_ptFireflyClamp( "r_ptFireflyClamp", "16", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: the brightest a single bounced sample may be" );
+idCVar r_ptGlow( "r_ptGlow", "0.1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much light a surface the game draws unlit gives off, for a white texel; it is shown as painted whatever this is; needs reloadPathTrace" );
+idCVar r_ptShadowFaces( "r_ptShadowFaces", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: shadows are cast by the side of a surface that is turned to the light, as the game casts them: a lamp set inside a wall shines out of it" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
 
 // OpenGL's side of opening the tracer's picture (GL_EXT_memory_object, GL_EXT_memory_object_win32)
@@ -396,7 +400,7 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool
 	if ( glows ) {
 		// not lit by the game's lights: it shows as it is painted, so it glows
 		material.flags |= PT_MAT_EMIT_TEXTURE;
-		material.emission[0] = material.emission[1] = material.emission[2] = 0.5f;
+		material.emission[0] = material.emission[1] = material.emission[2] = r_ptGlow.GetFloat(); material.emission_seen = 1.0f;
 	}
 
 	build.shaders.Append( shader );
@@ -463,11 +467,16 @@ static void PT_AddModel( ptWorldBuild_t &build, const idRenderEntityLocal *def )
 PT_LightFor
 
 A light of the game is a box or a pyramid that it fills, brightest in the
-middle and dark at the edge, and nowhere brighter than its colour. The
-tracer's is a point whose light thins with the square of the distance. It is
-told to reach as far as the game's does and no further, and to be no brighter
-nearer than half way out than it is there, where it is given the brightness
-that lights a surface facing it as the game would.
+middle and dark at the edge, and nowhere brighter than its colour, and its
+light does not thin with distance. The place its light comes from, for
+shading and for shadows, need not be the middle of the box, nor in it.
+
+The tracer's is a point whose light thins with the square of the distance,
+so it is told not to thin it at all as far as the light goes (core), and
+given the brightness that lights a surface facing it as the game would. A
+box is handed over as a box, which the tracer fades as the game does, from
+its middle to its faces. A pyramid is a cone that fades at its far end.
+A light the game casts no shadows from is one nothing stops.
 
 Fills in the light as one of colour 1, and the colour it has in this view.
 Returns false for what is not a light to the tracer, or not in this view.
@@ -492,10 +501,20 @@ static bool PT_LightFor( const idRenderLightLocal *def, const viewDef_t *viewDef
 
 	memset( &light, 0, sizeof( light ) );
 	if ( parms.pointLight ) {
-		reach = Max( parms.lightRadius.x, Max( parms.lightRadius.y, parms.lightRadius.z ) );
-		light.origin[0] = def->globalLightOrigin.x;
-		light.origin[1] = def->globalLightOrigin.y;
-		light.origin[2] = def->globalLightOrigin.z;
+		// the box, along the world's axes: one that is turned is taken as the box around it
+		idVec3 size;
+		for ( i = 0; i < 3; i++ ) {
+			size[i] = idMath::Fabs( parms.axis[0][i] ) * parms.lightRadius.x + idMath::Fabs( parms.axis[1][i] ) * parms.lightRadius.y
+					+ idMath::Fabs( parms.axis[2][i] ) * parms.lightRadius.z;
+			light.origin[i] = def->globalLightOrigin[i];
+			light.box_origin[i] = parms.origin[i];
+			light.box_size[i] = size[i];
+		}
+		if ( size.x <= 0.0f || size.y <= 0.0f || size.z <= 0.0f ) {
+			return false;
+		}
+		// as far as any of it is from where the light comes from
+		reach = ( def->globalLightOrigin - parms.origin ).Length() + size.Length();
 	} else {
 		idVec3	dir = parms.target * parms.axis;
 		float	length = dir.Normalize();
@@ -517,7 +536,8 @@ static bool PT_LightFor( const idRenderLightLocal *def, const viewDef_t *viewDef
 		return false;
 	}
 	light.reach = reach;
-	light.core = reach * 0.5f;
+	light.core = reach;
+	light.no_shadow = parms.noShadows || !shader->LightCastsShadows();
 	light.intensity[0] = light.intensity[1] = light.intensity[2] = idMath::PI * light.core * light.core;
 
 	// its colour is what its material makes of the colour it was given: that is
@@ -545,9 +565,10 @@ static float PT_Level( const idVec3 &colour ) {
 ================
 PT_AddLight
 
-A light the world is handed with. It is given as white, and as bright as it
-is now but never as dark: one that is off may come on, and the tracer looks
-for a light as often as the brightness it was handed with earns it.
+A light the world is handed with. It is given as white and as bright as
+any other, whatever it is now: the tracer keeps for each part of the map
+the lights that put most on it as they were handed over, and one that is
+off or dim then may be the room's only light once it comes on.
 ================
 */
 static void PT_AddLight( ptWorldBuild_t &build, int defIndex, const idRenderLightLocal *def, const viewDef_t *viewDef ) {
@@ -558,7 +579,7 @@ static void PT_AddLight( ptWorldBuild_t &build, int defIndex, const idRenderLigh
 		return;
 	}
 	worldLight.defIndex = defIndex;
-	worldLight.level = Max( PT_Level( colour ), 0.25f );
+	worldLight.level = 1.0f;
 	for ( int i = 0; i < 3; i++ ) {
 		worldLight.light.intensity[i] *= worldLight.level;
 	}
@@ -607,9 +628,10 @@ static void PT_FrameLights( const viewDef_t *viewDef ) {
 			known[was.defIndex] = true;
 			continue;
 		}
-		float moved = idMath::Fabs( light.reach - was.light.reach ) + idMath::Fabs( light.core - was.light.core ) + idMath::Fabs( light.cone_cos - was.light.cone_cos ) * 100.0f;
+		float moved = ( light.no_shadow != was.light.no_shadow ? 1.0f : 0.0f ) + idMath::Fabs( light.reach - was.light.reach ) + idMath::Fabs( light.core - was.light.core ) + idMath::Fabs( light.cone_cos - was.light.cone_cos ) * 100.0f;
 		for ( j = 0; j < 3; j++ ) {
 			moved += idMath::Fabs( light.origin[j] - was.light.origin[j] );
+			moved += idMath::Fabs( light.box_origin[j] - was.light.box_origin[j] ) + idMath::Fabs( light.box_size[j] - was.light.box_size[j] );
 			moved += idMath::Fabs( light.direction[j] - was.light.direction[j] ) * 100.0f;
 		}
 		if ( moved > 0.5f ) {
@@ -673,8 +695,8 @@ static void PT_FrameLights( const viewDef_t *viewDef ) {
 			if ( ( def->globalLightOrigin - eye ).Length() > reach ) {
 				continue;
 			}
-			common->Printf( "%4i %-18s %s colour %.2f %.2f %.2f reach %.0f%s %s\n", i, kind, def->parms.pointLight ? "point" : "cone ",
-							colour.x, colour.y, colour.z, reach, def->parms.noShadows ? " noshadows" : "", shader ? shader->GetName() : "" );
+			common->Printf( "%4i %-18s %s colour %.2f %.2f %.2f reach %.0f, %.0f away, from %.0f %.0f %.0f%s %s\n", i, kind, def->parms.pointLight ? "point" : "cone ",
+							colour.x, colour.y, colour.z, reach, ( def->globalLightOrigin - eye ).Length(), def->globalLightOrigin.x, def->globalLightOrigin.y, def->globalLightOrigin.z, def->parms.noShadows ? " noshadows" : "", shader ? shader->GetName() : "" );
 		}
 		common->Printf( "path tracer: %d lights in the world: %d the map's, %d the frame's (of %d found), %d lit, %d left out\n",
 						world->lightDefs.Num(), pt.worldLights.Num(), pt.frameLights.Num(), found.Num(), lit, left );
@@ -906,6 +928,10 @@ void PT_GatherView( void ) {
 				}
 				continue;
 			}
+			if ( list && ( origin - viewDef->renderView.vieworg ).Length() < 512.0f ) {
+				common->Printf( "      %5i tris %s%s%s\n", tri->numIndexes / 3, shader->GetName(), shader->SurfaceCastsShadow() ? "" : " (no shadow)",
+								shader->GetCullType() == CT_TWO_SIDED ? " (two sided)" : "" );
+			}
 			if ( !tri->tangentsCalculated ) {
 				R_DeriveTangents( tri );		// a posed model's normals are worked out when they are first wanted
 			}
@@ -938,7 +964,8 @@ void PT_GatherView( void ) {
 			pt.spans.Append( span );
 		}
 		if ( list && ( origin - viewDef->renderView.vieworg ).Length() < 512.0f ) {
-			common->Printf( "%5i %6i of %6i tris  %s%s\n", i, span.count, numModelTris, def->parms.hModel->Name(), ( flags & PT_MAT_HELD ) ? " (held)" : "" );
+			common->Printf( "%5i %6i of %6i tris  %s%s%s at %.0f %.0f %.0f\n", i, span.count, numModelTris, def->parms.hModel->Name(), ( flags & PT_MAT_HELD ) ? " (held)" : "",
+							( flags & PT_MAT_NO_SHADOW ) ? " (no shadow)" : "", origin.x, origin.y, origin.z );
 		}
 	}
 
@@ -1014,7 +1041,7 @@ static void PT_MovingMaterials( void ) {
 		if ( glows ) {
 			// not lit by the game's lights: it shows as it is painted, so it glows
 			material.flags |= PT_MAT_EMIT_TEXTURE;
-			material.emission[0] = material.emission[1] = material.emission[2] = 0.5f;
+			material.emission[0] = material.emission[1] = material.emission[2] = r_ptGlow.GetFloat(); material.emission_seen = 1.0f;
 		}
 		pt.movingMaterials.Append( material );
 	}
@@ -1123,9 +1150,10 @@ bool PT_DrawView( void ) {
 	view.filter = 2;
 	view.view_mode = r_ptView.GetInteger();
 	view.reflections = 2;
+	view.shadow_faces = r_ptShadowFaces.GetBool();
 	view.reflection_rate = 1.0f;
-	view.light_samples = 8;
-	view.firefly_clamp = 16.0f;
+	view.light_samples = r_ptLightSamples.GetInteger();
+	view.firefly_clamp = r_ptFireflyClamp.GetFloat();
 	view.texture_filter = 1;
 	view.denoise = r_ptDenoise.GetInteger();
 	view.history = 8;
