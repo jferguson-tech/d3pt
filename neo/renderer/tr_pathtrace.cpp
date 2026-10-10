@@ -53,6 +53,10 @@ file is what stands between the two:
   shares with OpenGL, and that picture is drawn where the 3D view would have
   been. Everything 2D is then drawn over it by OpenGL as it always was.
 
+  materials: the game lights a surface through three pictures, its colour,
+  its bumps and how brightly it shines; the tracer wants its colour, its
+  bumps, how rough it is and how far it is metal. See PT_ReadMaterial.
+
 What is not there yet: translucent surfaces, particles, surfaces the game
 bends as it draws them, and all that the lights' own pictures do.
 
@@ -76,6 +80,7 @@ idCVar r_ptAutoExposure( "r_ptAutoExposure", "0", CVAR_RENDERER | CVAR_BOOL | CV
 idCVar r_ptLightScale( "r_ptLightScale", "2", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright a light is for its colour and size" );
 idCVar r_ptDenoise( "r_ptDenoise", "4", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: passes of the spatial filter, 0-4" );
 idCVar r_ptEntities( "r_ptEntities", "1", CVAR_RENDERER | CVAR_BOOL, "path tracer: trace the models of entities: monsters, doors, the weapon and all else that is not the map itself" );
+idCVar r_ptMaterials( "r_ptMaterials", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: read the bump and specular maps of materials; 0: their colour alone, all of them matte; needs reloadPathTrace" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
 
 // OpenGL's side of opening the tracer's picture (GL_EXT_memory_object, GL_EXT_memory_object_win32)
@@ -143,8 +148,9 @@ static struct {
 	idList<float>			lastPositions;		// the view before's positions
 	idList<ptMoving_t>		moving;				// the materials of what moves
 	idList<pt_material_t>	movingMaterials;	// the same, as the tracer has them
-	idList<const idImage *>	movingImages;		// the pictures they are lit through
-	idList<int>				movingTextures;		// and the tracer's handle for each, or -1
+	idList<const idMaterial *>	movingRead;		// the game's materials whose pictures the tracer has
+	idList<int>				movingBase;			// and its handles for the two it was given for each, or -1
+	idList<int>				movingDetail;
 	int						gatherMsec;
 } pt;
 
@@ -152,7 +158,9 @@ static struct {
 typedef struct {
 	idList<pt_texture_t>		textures;
 	idList<byte *>				pixels;			// to free
-	idList<const idImage *>		images;			// of each texture
+	idList<const idMaterial *>	read;			// the game's materials whose pictures are among the textures
+	idList<int>					readBase;		// and which two are each one's, or -1
+	idList<int>					readDetail;
 	idList<pt_material_t>		materials;
 	idList<const idMaterial *>	shaders;		// of each material
 	idList<bool>				noShadows;		// and whether it is for a model that casts no shadow
@@ -198,8 +206,9 @@ void PT_Shutdown( void ) {
 	pt.lastPositions.Clear();
 	pt.moving.Clear();
 	pt.movingMaterials.Clear();
-	pt.movingImages.Clear();
-	pt.movingTextures.Clear();
+	pt.movingRead.Clear();
+	pt.movingBase.Clear();
+	pt.movingDetail.Clear();
 	pt.mapName.Clear();
 	memset( &pt, 0, sizeof( pt ) );
 }
@@ -286,57 +295,66 @@ static bool PT_Start( void ) {
 	return true;
 }
 
+// what is read of one of the game's materials for the tracer
+typedef struct {
+	byte	*base;			// its colour, and in alpha its holes; NULL for plain white
+	int		baseWidth, baseHeight;
+	byte	*detail;		// the normal's x and y, how far it is metal, how rough it is; NULL for none
+	int		detailWidth, detailHeight;
+	bool	glows;			// it is shown unlit
+	bool	holes;			// base's alpha cuts it out
+} ptRead_t;
+
 /*
 ================
-PT_TextureFor
+PT_ReadImage
 
 The pixels of an image, read from its file again: the renderer keeps none.
-Returns the index in the build's textures, or -1 for none.
+To be freed with R_StaticFree.
 ================
 */
-static int PT_TextureFor( ptWorldBuild_t &build, const idImage *image ) {
-	int		i;
-	byte	*pic = NULL;
-	int		width = 0, height = 0;
+static byte *PT_ReadImage( const idImage *image, int &width, int &height ) {
+	byte *pic = NULL;
 
+	width = height = 0;
 	if ( !image ) {
-		return -1;
-	}
-	for ( i = 0; i < build.images.Num(); i++ ) {
-		if ( build.images[i] == image ) {
-			return i;
-		}
+		return NULL;
 	}
 	R_LoadImageProgram( image->imgName, &pic, &width, &height, NULL );
-	if ( !pic || width <= 0 || height <= 0 ) {
-		return -1;
+	if ( pic && ( width <= 0 || height <= 0 ) ) {
+		R_StaticFree( pic );
+		pic = NULL;
 	}
-
-	pt_texture_t texture;
-	texture.width = width;
-	texture.height = height;
-	texture.pixels = (const uint32_t *) pic;
-	build.pixels.Append( pic );
-	build.images.Append( image );
-	return build.textures.Append( texture );
+	return pic;
 }
 
 /*
 ================
-PT_ReadStages
+PT_ReadMaterial
 
-What the tracer takes from a material: the picture it is lit through, or
-failing that one it shows unlit, and whether that picture's alpha cuts holes
-in it. The game cuts holes by any stage it likes, and a monster's are cut by
-a picture of its own that burns it away when it dies: only holes cut by the
+The game lights a surface through a picture of its colour (diffuse), one of
+its bumps (a normal map) and one of how brightly and in what colour it
+shines back at a light (specular), which it draws with one fixed, fairly
+wide highlight. The tracer wants a colour, a normal, how rough the surface
+is and how far it is metal, and has no specular colour of its own: a metal
+reflects in its colour and nothing else reflects more than a little.
+
+So what shines brightly is taken for metal and for smoother, and a metal's
+colour has what it shines with added to it, since that is most of what it
+is seen by. What shines little is left as it is, and rough. These are
+guesses at what the artists meant, not what they painted.
+
+Holes: the game cuts them by any stage it likes, and a monster's are cut by
+a picture of its own that burns it away when it dies. Only holes cut by the
 picture that is shown can be given to the tracer.
 ================
 */
-static const idImage *PT_ReadStages( const idMaterial *shader, bool &glows, bool &holes ) {
-	const shaderStage_t	*diffuse = NULL;
-	const shaderStage_t	*unlit = NULL;
+static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pictures ) {
+	const shaderStage_t	*diffuse = NULL, *unlit = NULL, *bump = NULL, *specular = NULL;
+	int					i;
 
-	for ( int i = 0; i < shader->GetNumStages(); i++ ) {
+	memset( &read, 0, sizeof( read ) );
+	for ( i = 0; i < shader->GetNumStages(); i++ ) {
 		const shaderStage_t *stage = shader->GetStage( i );
 		if ( !stage->texture.image || stage->texture.cinematic || stage->texture.dynamic != DI_STATIC ) {
 			continue;
@@ -345,12 +363,108 @@ static const idImage *PT_ReadStages( const idMaterial *shader, bool &glows, bool
 			diffuse = stage;
 		} else if ( stage->lighting == SL_AMBIENT && !unlit ) {
 			unlit = stage;
+		} else if ( stage->lighting == SL_BUMP && !bump ) {
+			bump = stage;
+		} else if ( stage->lighting == SL_SPECULAR && !specular ) {
+			specular = stage;
 		}
 	}
 	const shaderStage_t *shown = diffuse ? diffuse : unlit;
-	glows = !diffuse && unlit;
-	holes = shown && shown->hasAlphaTest;
-	return shown ? shown->texture.image : NULL;
+	read.glows = !diffuse && unlit;
+	read.holes = shown && shown->hasAlphaTest;
+	if ( !pictures ) {
+		return;		// only what it is, for one whose pictures the tracer has
+	}
+	if ( shown ) {
+		read.base = PT_ReadImage( shown->texture.image, read.baseWidth, read.baseHeight );
+	}
+	if ( !diffuse || !r_ptMaterials.GetBool() ) {
+		return;
+	}
+
+	int		bumpWidth, bumpHeight, shineWidth, shineHeight;
+	byte	*bumps = bump ? PT_ReadImage( bump->texture.image, bumpWidth, bumpHeight ) : NULL;
+	byte	*shine = specular ? PT_ReadImage( specular->texture.image, shineWidth, shineHeight ) : NULL;
+	if ( !bumps && !shine ) {
+		return;
+	}
+
+	// how far a texel is metal, and how rough, by how brightly it shines
+	const float metalFrom = 0.25f, metalTo = 0.65f;
+	const float roughDull = 0.7f, roughBright = 0.3f, roughNone = 0.85f;
+
+	// the detail: the size of the bumps if there are any
+	read.detailWidth = bumps ? bumpWidth : shineWidth;
+	read.detailHeight = bumps ? bumpHeight : shineHeight;
+	read.detail = (byte *) R_StaticAlloc( read.detailWidth * read.detailHeight * 4 );
+	for ( int y = 0; y < read.detailHeight; y++ ) {
+		for ( int x = 0; x < read.detailWidth; x++ ) {
+			byte	*out = &read.detail[( y * read.detailWidth + x ) * 4];
+			float	metal = 0.0f, rough = roughNone;
+
+			if ( shine ) {
+				const byte	*in = &shine[( ( y * shineHeight / read.detailHeight ) * shineWidth + x * shineWidth / read.detailWidth ) * 4];
+				const float	level = ( in[0] * 0.2126f + in[1] * 0.7152f + in[2] * 0.0722f ) * ( 1.0f / 255.0f );
+				metal = idMath::ClampFloat( 0.0f, 1.0f, ( level - metalFrom ) / ( metalTo - metalFrom ) );
+				rough = roughDull + ( roughBright - roughDull ) * level;
+			}
+			out[0] = bumps ? bumps[( y * bumpWidth + x ) * 4] : 128;
+			out[1] = bumps ? bumps[( y * bumpWidth + x ) * 4 + 1] : 128;
+			out[2] = (byte) ( metal * 255.0f + 0.5f );
+			out[3] = (byte) ( rough * 255.0f + 0.5f );
+		}
+	}
+
+	// a metal's colour: what it is painted with what it shines with
+	if ( shine && read.base ) {
+		for ( int y = 0; y < read.baseHeight; y++ ) {
+			for ( int x = 0; x < read.baseWidth; x++ ) {
+				byte		*out = &read.base[( y * read.baseWidth + x ) * 4];
+				const byte	*in = &shine[( ( y * shineHeight / read.baseHeight ) * shineWidth + x * shineWidth / read.baseWidth ) * 4];
+				const float	level = ( in[0] * 0.2126f + in[1] * 0.7152f + in[2] * 0.0722f ) * ( 1.0f / 255.0f );
+				const float	metal = idMath::ClampFloat( 0.0f, 1.0f, ( level - metalFrom ) / ( metalTo - metalFrom ) );
+
+				for ( int c = 0; c < 3; c++ ) {
+					out[c] = (byte) Min( 255.0f, out[c] + in[c] * metal );
+				}
+			}
+		}
+	}
+
+	if ( bumps ) {
+		R_StaticFree( bumps );
+	}
+	if ( shine ) {
+		R_StaticFree( shine );
+	}
+}
+
+/*
+================
+PT_FillMaterial
+
+The tracer's material for one that was read, given where its two pictures are.
+================
+*/
+static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int base, int detail, unsigned int flags ) {
+	memset( &material, 0, sizeof( material ) );
+	material.texture = base;
+	material.normal_texture = detail;
+	material.anim_next = -1;
+	material.alpha = 1.0f;
+	material.roughness = 0.85f;
+	material.flags = flags;
+	if ( detail >= 0 ) {
+		material.flags |= PT_MAT_METAL_TEXTURE;
+	}
+	if ( read.holes ) {
+		material.flags |= PT_MAT_ALPHA_TEST;
+	}
+	if ( read.glows ) {
+		// not lit by the game's lights: it shows as it is painted, so it glows
+		material.flags |= PT_MAT_EMIT_TEXTURE;
+		material.emission[0] = material.emission[1] = material.emission[2] = 0.5f;
+	}
 }
 
 /*
@@ -361,9 +475,9 @@ Returns the index in the build's materials, or -1 for a surface that is not trac
 ================
 */
 static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool noShadow ) {
-	int					i;
-	bool				glows, holes;
-	pt_material_t		material;
+	int				i;
+	ptRead_t		read;
+	pt_material_t	material;
 
 	if ( !shader || !shader->IsDrawn() || shader->Coverage() == MC_TRANSLUCENT ) {
 		return -1;
@@ -379,25 +493,37 @@ static int PT_MaterialFor( ptWorldBuild_t &build, const idMaterial *shader, bool
 		}
 	}
 
-	const idImage *image = PT_ReadStages( shader, glows, holes );
+	// its pictures may be there already, for the same material casting shadows or not
+	for ( i = 0; i < build.read.Num(); i++ ) {
+		if ( build.read[i] == shader ) {
+			break;
+		}
+	}
+	PT_ReadMaterial( shader, read, i == build.read.Num() );
+	if ( i == build.read.Num() ) {
+		pt_texture_t texture;
+		int base = -1, detail = -1;
 
-	memset( &material, 0, sizeof( material ) );
-	material.texture = PT_TextureFor( build, image );
-	material.normal_texture = -1;
-	material.anim_next = -1;
-	material.alpha = 1.0f;
-	material.roughness = 0.7f;
-	if ( holes ) {
-		material.flags |= PT_MAT_ALPHA_TEST;
+		if ( read.base ) {
+			texture.width = read.baseWidth;
+			texture.height = read.baseHeight;
+			texture.pixels = (const uint32_t *) read.base;
+			build.pixels.Append( read.base );
+			base = build.textures.Append( texture );
+		}
+		if ( read.detail ) {
+			texture.width = read.detailWidth;
+			texture.height = read.detailHeight;
+			texture.pixels = (const uint32_t *) read.detail;
+			build.pixels.Append( read.detail );
+			detail = build.textures.Append( texture );
+		}
+		build.read.Append( shader );
+		build.readBase.Append( base );
+		build.readDetail.Append( detail );
 	}
-	if ( noShadow ) {
-		material.flags |= PT_MAT_NO_SHADOW;
-	}
-	if ( glows ) {
-		// not lit by the game's lights: it shows as it is painted, so it glows
-		material.flags |= PT_MAT_EMIT_TEXTURE;
-		material.emission[0] = material.emission[1] = material.emission[2] = 0.5f;
-	}
+
+	PT_FillMaterial( material, read, build.readBase[i], build.readDetail[i], noShadow ? PT_MAT_NO_SHADOW : 0 );
 
 	build.shaders.Append( shader );
 	build.noShadows.Append( noShadow );
@@ -971,51 +1097,43 @@ static void PT_MovingMaterials( void ) {
 
 	for ( i = pt.movingMaterials.Num(); i < pt.moving.Num(); i++ ) {
 		const idMaterial	*shader = pt.moving[i].shader;
-		bool				glows, holes;
+		ptRead_t			read;
 		pt_material_t		material;
-		const idImage		*image = PT_ReadStages( shader, glows, holes );
 
-		memset( &material, 0, sizeof( material ) );
-		material.texture = -1;
-		material.normal_texture = -1;
-		material.anim_next = -1;
-		material.alpha = 1.0f;
-		material.roughness = 0.7f;
-		material.flags = pt.moving[i].flags;
-		if ( holes ) {
-			material.flags |= PT_MAT_ALPHA_TEST;
-		}
-		if ( image ) {
-			for ( j = 0; j < pt.movingImages.Num(); j++ ) {
-				if ( pt.movingImages[j] == image ) {
-					break;
-				}
+		for ( j = 0; j < pt.movingRead.Num(); j++ ) {
+			if ( pt.movingRead[j] == shader ) {
+				break;
 			}
-			if ( j == pt.movingImages.Num() ) {
-				byte	*pic = NULL;
-				int		width = 0, height = 0, handle = -1;
+		}
+		PT_ReadMaterial( shader, read, j == pt.movingRead.Num() );
+		if ( j == pt.movingRead.Num() ) {
+			pt_texture_t texture;
+			int base = -1, detail = -1;
 
-				R_LoadImageProgram( image->imgName, &pic, &width, &height, NULL );
-				if ( pic && width > 0 && height > 0 ) {
-					pt_texture_t texture;
-					texture.width = width;
-					texture.height = height;
-					texture.pixels = (const uint32_t *) pic;
-					handle = pt.backend->texture_create( pt.backend, &texture );
-				}
-				if ( pic ) {
-					R_StaticFree( pic );
-				}
-				pt.movingImages.Append( image );
-				pt.movingTextures.Append( handle );
+			if ( read.base ) {
+				texture.width = read.baseWidth;
+				texture.height = read.baseHeight;
+				texture.pixels = (const uint32_t *) read.base;
+				base = pt.backend->texture_create( pt.backend, &texture );
 			}
-			material.texture = pt.movingTextures[j];
+			if ( read.detail ) {
+				texture.width = read.detailWidth;
+				texture.height = read.detailHeight;
+				texture.pixels = (const uint32_t *) read.detail;
+				detail = pt.backend->texture_create( pt.backend, &texture );
+			}
+			pt.movingRead.Append( shader );
+			pt.movingBase.Append( base );
+			pt.movingDetail.Append( detail );
 		}
-		if ( glows ) {
-			// not lit by the game's lights: it shows as it is painted, so it glows
-			material.flags |= PT_MAT_EMIT_TEXTURE;
-			material.emission[0] = material.emission[1] = material.emission[2] = 0.5f;
+		if ( read.base ) {
+			R_StaticFree( read.base );
 		}
+		if ( read.detail ) {
+			R_StaticFree( read.detail );
+		}
+
+		PT_FillMaterial( material, read, pt.movingBase[j], pt.movingDetail[j], pt.moving[i].flags );
 		pt.movingMaterials.Append( material );
 	}
 }
