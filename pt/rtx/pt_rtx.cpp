@@ -365,6 +365,9 @@ struct RtxBackend
 	Buffer					meter, meter_read;
 	uint32_t				meter_was[2] = {};		// what they stood at when last read
 	int						num_world_lights = 0;
+	std::vector<int>		light_given;		// for each light load_world was given, its place in world_lights or -1
+	std::vector<float>		light_base;			// 3 per world light: its emission as given
+	bool					lights_scaled = false;
 	bool					has_grid = false;
 	float					grid_origin[3] = {0, 0, 0}, grid_inv_cell = 0.0f;
 	int						grid_dims[3] = {0, 0, 0};
@@ -2155,6 +2158,7 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 				out.dir[a] = l.dir[a];
 			}
 			out.edge[0] = l.reach;		// a point has no edge: its place holds how far it reaches
+			out.edge[1] = l.core;		// and the least distance it is taken to be at
 		}
 		else
 		{
@@ -2251,6 +2255,17 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 	}
 
 	s->num_world_lights = (int)num_lights;
+	s->light_given.assign(in->num_lights > 0 ? in->num_lights : 0, -1);
+	s->light_base.resize(num_lights * 3);
+	for (size_t i = 0; i < num_lights; i++)
+	{
+		const pt::Light &l = w->lights[i];
+		for (int a = 0; a < 3; a++)
+			s->light_base[i * 3 + a] = l.emission[a];
+		if (l.tri == ~0u && l.given >= 0 && l.given < (int)s->light_given.size())
+			s->light_given[l.given] = (int)i;
+	}
+	s->lights_scaled = false;
 	s->has_grid = cells > 0 && w->sky_chance.size() == cells;
 	for (int a = 0; a < 3; a++)
 	{
@@ -2557,6 +2572,14 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 			lights[i].emission[a] = scene->lights[i].intensity[a];
 		}
 		lights[i].radius = std::max(scene->lights[i].radius, 0.0f);
+		if (lights[i].radius <= 0.0f)
+		{
+			for (int a = 0; a < 3; a++)
+				lights[i].dir[a] = scene->lights[i].direction[a];
+			lights[i].cone_cos = scene->lights[i].cone_cos;
+			lights[i].edge[0] = std::max(scene->lights[i].reach, 0.0f);
+			lights[i].edge[1] = std::max(scene->lights[i].core, 0.0f);
+		}
 	}
 	if (num_lights)
 		hash = HashBytes(scene->lights, num_lights * sizeof(pt_point_light_t), hash);
@@ -2748,6 +2771,24 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 		styles[i] = (view->light_styles && i < view->num_light_styles) ? view->light_styles[i] : 1.0f;
 	memcpy(s->tables.ptr, styles, sizeof(styles));
 	hash = HashBytes(styles, sizeof(styles), hash);
+
+	// the map's lights, as bright as the frame says each is
+	if (view->light_scales || s->lights_scaled)
+	{
+		GpuLight *of_map = static_cast<GpuLight *>(s->world_lights.ptr);
+		const int given = view->light_scales ? std::min(view->num_light_scales, (int)s->light_given.size()) : 0;
+		for (int i = 0; i < (int)s->light_given.size(); i++)
+		{
+			const int at = s->light_given[i];
+			if (at < 0)
+				continue;
+			for (int a = 0; a < 3; a++)
+				of_map[at].emission[a] = s->light_base[at * 3 + a] * (i < given ? std::max(view->light_scales[i * 3 + a], 0.0f) : 1.0f);
+		}
+		if (given)
+			hash = HashBytes(view->light_scales, (size_t)given * 3 * sizeof(float), hash);
+		s->lights_scaled = view->light_scales != nullptr;
+	}
 
 	// everything outside the camera that changes the picture
 	hash = HashBytes(&view->anim_frame, sizeof(view->anim_frame), hash);

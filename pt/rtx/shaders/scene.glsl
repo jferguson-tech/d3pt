@@ -1525,6 +1525,8 @@ Lit DirectLights(Surface s, bool first_hit)
 		if (nol <= 0.0)
 			continue;
 		float geom = 1.0 / dist2;
+		if (!area && l.radius <= 0.0)
+			geom = 1.0 / max(dist2, l.edge.y * l.edge.y);		// see pt_point_light_t's core
 		if (!area && l.radius <= 0.0 && l.edge.x > 0.0)
 		{
 			// a point light of the map that only goes so far: see pt_point_light_t's reach
@@ -1655,7 +1657,20 @@ Lit PointLight(Surface s, Light l)
 	const float dist2 = dot(d, d);
 	if (dist2 <= 1.0e-6)
 		return Lit(vec3(0.0), vec3(0.0));
-	return Reflect(s, d * inversesqrt(dist2), l.emission / dist2);
+	const vec3 wi = d * inversesqrt(dist2);
+	if (l.cone_cos > 0.0 && -dot(wi, l.dir) < l.cone_cos)
+		return Lit(vec3(0.0), vec3(0.0));		// outside the spotlight's cone
+	float geom = 1.0 / max(dist2, l.edge.y * l.edge.y);		// see pt_point_light_t's core
+	if (l.edge.x > 0.0)
+	{
+		// it only goes so far: see pt_point_light_t's reach
+		float w = dist2 / (l.edge.x * l.edge.x);
+		if (w >= 1.0)
+			return Lit(vec3(0.0), vec3(0.0));
+		w = 1.0 - w * w;
+		geom *= w * w;
+	}
+	return Reflect(s, wi, l.emission * geom);
 }
 
 // A point on a ball of light, drawn evenly over as much of the ball as shows
@@ -1840,6 +1855,8 @@ void DirectEveryLight(Surface s, out vec3 diffuse, out vec3 specular)
 		if (nol <= 0.0)
 			continue;
 		float geom = 1.0 / dist2;
+		if (!area && l.radius <= 0.0)
+			geom = 1.0 / max(dist2, l.edge.y * l.edge.y);		// see pt_point_light_t's core
 		if (!area && l.radius <= 0.0 && l.edge.x > 0.0)
 		{
 			// a point light of the map that only goes so far: see pt_point_light_t's reach

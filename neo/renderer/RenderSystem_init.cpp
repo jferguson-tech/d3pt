@@ -2071,6 +2071,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "listModes", R_ListModes_f, CMD_FL_RENDERER, "lists all video modes" );
 	cmdSystem->AddCommand( "reloadSurface", R_ReloadSurface_f, CMD_FL_RENDERER, "reloads the decl and images for selected surface" );
 	cmdSystem->AddCommand( "reloadPathTrace", PT_Reload_f, CMD_FL_RENDERER, "hands the map to the path tracer again" );
+	cmdSystem->AddCommand( "listPathTraceLights", PT_ListLights_f, CMD_FL_RENDERER, "lists the lights the path tracer has near the eye in the next view" );
 }
 
 /*
