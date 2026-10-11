@@ -80,6 +80,7 @@ extern int			time_backend;			// renderer backend time
 
 extern int			com_frameTime;			// time for the current frame in milliseconds
 extern volatile int	com_ticNumber;			// 60 hz tics, incremented by async function
+extern volatile double	com_ticClock;		// when it was, in Sys_GetClockTicks
 extern int			com_editors;			// current active editor(s)
 extern bool			com_editorActive;		// true if an editor has focus
 

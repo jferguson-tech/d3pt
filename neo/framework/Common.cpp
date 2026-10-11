@@ -94,6 +94,7 @@ int				time_backend;			// renderSystem backend time
 int				com_frameTime;			// time for the current frame in milliseconds
 int				com_frameNumber;		// variable frame number
 volatile int	com_ticNumber;			// 60 hz tics
+volatile double	com_ticClock;
 int				com_editors;			// currently opened editor(s)
 bool			com_editorActive;		//  true if an editor has focus
 
@@ -2569,6 +2570,7 @@ void idCommonLocal::SingleAsyncTic( void ) {
 
 	// we update com_ticNumber after all the background tasks
 	// have completed their work for this tic
+	com_ticClock = Sys_GetClockTicks();
 	com_ticNumber++;
 
 	stat->timeConsumed = Sys_Milliseconds() - stat->milliseconds;

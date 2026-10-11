@@ -2444,9 +2444,25 @@ bool idGameLocal::Draw( int clientNum ) {
 	}
 
 	// render the scene
+	const bool between = betweenTics && player->BeginViewBetweenTics( betweenTicsFraction, betweenTicsYaw, betweenTicsPitch );
 	player->playerView.RenderPlayerView( player->hud );
+	if ( between ) {
+		player->EndViewBetweenTics();
+	}
 
 	return true;
+}
+
+/*
+================
+idGameLocal::SetViewBetweenTics
+================
+*/
+void idGameLocal::SetViewBetweenTics( bool on, float fraction, float yaw, float pitch ) {
+	betweenTics = on;
+	betweenTicsFraction = fraction;
+	betweenTicsYaw = yaw;
+	betweenTicsPitch = pitch;
 }
 
 /*
