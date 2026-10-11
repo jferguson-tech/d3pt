@@ -113,6 +113,7 @@ idCVar r_ptSaturation( "r_ptSaturation", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_
 idCVar r_ptGlass( "r_ptGlass", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: trace glass; needs reloadPathTrace" );
 idCVar r_ptGlassTint( "r_ptGlassTint", "0.08", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much of what is behind a pane of glass its own colour covers, 0 to 1; needs reloadPathTrace" );
 idCVar r_ptRefraction( "r_ptRefraction", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: glass bends what is seen through it" );
+idCVar r_ptShowTimes( "r_ptShowTimes", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: print where the time of a frame goes, averaged over this many frames" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
 
 // OpenGL's side of opening the tracer's picture (GL_EXT_memory_object, GL_EXT_memory_object_win32)
@@ -186,6 +187,7 @@ static struct {
 	idList<int>				movingDetail;
 	idList<int>				movingShine;
 	int						gatherMsec;
+	double					gatherMs;				// the same, finer
 } pt;
 
 // what is gathered of a world before it is handed over
@@ -1172,6 +1174,7 @@ void PT_GatherView( void ) {
 	}
 
 	const int start = Sys_Milliseconds();
+	const double startTicks = Sys_GetClockTicks();
 
 	// here, before any of them is asked for again
 	if ( pt.forgetMoving ) {
@@ -1357,6 +1360,7 @@ void PT_GatherView( void ) {
 	}
 
 	pt.gatherMsec = Sys_Milliseconds() - start;
+	pt.gatherMs = ( Sys_GetClockTicks() - startTicks ) * 1000.0 / Sys_ClockTicksPerSecond();
 }
 
 /*
@@ -1405,6 +1409,95 @@ static void PT_MovingMaterials( void ) {
 		PT_FillMaterial( material, read, pt.movingBase[j], pt.movingDetail[j], pt.movingShine[j], pt.moving[i].flags );
 		pt.movingMaterials.Append( material );
 	}
+}
+
+/*
+================
+PT_ShowTimes
+
+Where the time of a frame goes, averaged over r_ptShowTimes frames: the whole
+frame, then the parts of it that are the tracer's. gather is the models of
+what moves, read here; send is the tracer's own work on the processor, the
+waits for the card among it; the rest are the card's times for each part.
+================
+*/
+static void PT_ShowTimes( double sendMs ) {
+	static double	lastTicks, frameMs, gatherMs, sentMs, stageMs[8];
+	static int		frames, stageFrames;
+	const char		*names[8];
+	pt_stage_t		stages[8];
+
+	const int every = r_ptShowTimes.GetInteger();
+	if ( every <= 0 ) {
+		frames = 0;
+		lastTicks = 0.0;
+		return;
+	}
+	const double now = Sys_GetClockTicks();
+	int num = pt.backend->stages ? pt.backend->stages( pt.backend, stages, 8 ) : 0;
+	if ( lastTicks == 0.0 || frames == 0 ) {
+		frameMs = gatherMs = sentMs = 0.0;
+		stageFrames = 0;
+		memset( stageMs, 0, sizeof( stageMs ) );
+	}
+	// a build made with PT_PERF knows each part of the work by name
+	static const char	*fineNames[40];
+	static double		fineMs[40];
+	static int			fineWhere[40], fineNum;
+	if ( pt.backend->perf ) {
+		pt_stage_t fine[40];
+		const int count = pt.backend->perf( pt.backend, fine, 40 );
+		for ( int i = 0; i < count && lastTicks != 0.0; i++ ) {
+			int at;
+			for ( at = 0; at < fineNum; at++ ) {
+				if ( fineWhere[at] == fine[i].where && !strcmp( fineNames[at], fine[i].name ) ) {
+					break;
+				}
+			}
+			if ( at == fineNum ) {
+				if ( fineNum == 40 ) {
+					continue;
+				}
+				fineNames[at] = fine[i].name;
+				fineWhere[at] = fine[i].where;
+				fineMs[at] = 0.0;
+				fineNum++;
+			}
+			fineMs[at] += fine[i].ms;
+		}
+	}
+	if ( lastTicks != 0.0 ) {
+		frameMs += ( now - lastTicks ) * 1000.0 / Sys_ClockTicksPerSecond();
+		gatherMs += pt.gatherMs;
+		sentMs += sendMs;
+		if ( num ) {
+			for ( int i = 0; i < num; i++ ) {
+				stageMs[i] += stages[i].ms;
+			}
+			stageFrames++;
+		}
+		frames++;
+	}
+	lastTicks = now;
+	if ( frames < every ) {
+		return;
+	}
+	idStr line = va( "pt times: frame %.2f ms (%.1f fps), gather %.2f, send %.2f", frameMs / frames, 1000.0 * frames / frameMs, gatherMs / frames, sentMs / frames );
+	double card = 0.0;
+	for ( int i = 1; i < num && stageFrames; i++ ) {
+		line += va( ", %s %.2f", stages[i].name, stageMs[i] / stageFrames );
+		card += stageMs[i] / stageFrames;
+	}
+	common->Printf( "%s, card %.2f; %d triangles moving\n", line.c_str(), card, pt.triMaterials.Num() );
+	if ( fineNum ) {
+		line = "pt parts:";
+		for ( int i = 0; i < fineNum; i++ ) {
+			line += va( " %s%s %.2f", fineWhere[i] == 1 ? "card " : "", fineNames[i], fineMs[i] / frames );
+		}
+		common->Printf( "%s\n", line.c_str() );
+	}
+	fineNum = 0;
+	frames = 0;
 }
 
 /*
@@ -1624,9 +1717,13 @@ bool PT_DrawView( void ) {
 		view.restart = 1;
 	}
 
+	const double sendTicks = Sys_GetClockTicks();
 	pt.backend->render_view( pt.backend, &view );
-	pt.backend->present( pt.backend, pt.overlay.Ptr(), NULL, pt.overlaySent ? 0 : -1 );
+	// (the overlay is empty and stays so: none of it has changed since it was first sent)
+	static const pt_rect_t noRect = { 0, 0, 0, 0 };
+	pt.backend->present( pt.backend, pt.overlay.Ptr(), &noRect, pt.overlaySent ? 0 : -1 );
 	pt.overlaySent = true;
+	PT_ShowTimes( ( Sys_GetClockTicks() - sendTicks ) * 1000.0 / Sys_ClockTicksPerSecond() );
 
 	// The depth of the scene as OpenGL sees it, which is all it draws of it:
 	// what it lays over the traced picture is hidden where the scene hides it.

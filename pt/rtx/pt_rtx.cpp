@@ -2338,12 +2338,38 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		in->num_triangles, s->world.num_glass, in->num_materials, in->num_textures, (int)num_lights);
 }
 
+// Only ever compared with the hash of the frame before, to tell whether
+// anything has changed. Every triangle that moves goes through here every
+// frame, so it takes eight bytes at a step and four steps side by side: a
+// byte at a time this took longer than copying the triangles to the card.
 uint32_t HashBytes(const void *data, size_t bytes, uint32_t h)
 {
 	const uint8_t *p = static_cast<const uint8_t *>(data);
-	for (size_t i = 0; i < bytes; i++)
-		h = (h ^ p[i]) * 16777619u;
-	return h;
+	const uint64_t k = 0x9E3779B97F4A7C15ull;
+	uint64_t lane[4] = {h ^ k, k * 3, k * 5, (uint64_t)bytes * k};
+	size_t i = 0;
+	for (; i + 32 <= bytes; i += 32)
+	{
+		uint64_t w[4];
+		memcpy(w, p + i, 32);
+		for (int a = 0; a < 4; a++)
+		{
+			lane[a] = (lane[a] ^ w[a]) * k;
+			lane[a] ^= lane[a] >> 29;
+		}
+	}
+	for (; i < bytes; i++)
+	{
+		lane[0] = (lane[0] ^ p[i]) * k;
+		lane[0] ^= lane[0] >> 29;
+	}
+	uint64_t all = lane[0];
+	for (int a = 1; a < 4; a++)
+	{
+		all = (all ^ lane[a]) * k;
+		all ^= all >> 29;
+	}
+	return (uint32_t)(all ^ (all >> 32));
 }
 
 const float kTypicalTarget = 0.0054f;	// the brightness the exposure aims the typical pixel at
@@ -2550,22 +2576,34 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 				num_solid++;
 		}
 		uint32_t at_solid = 0, at_glass = num_solid, at_held = n - num_held;
-		for (uint32_t t = 0; t < n; t++)
+		// (a run of triangles of one material at a time: they stay
+		// together, and a model's are thousands to a material)
+		for (uint32_t t = 0; t < n; )
 		{
 			const uint32_t m = material_of(t);
-			const uint32_t to = held_of(m) ? at_held++
-				: (!num_materials || !OneSided(scene->materials[m])) ? at_solid++ : at_glass++;
-			memcpy(&corners[to * 9], &scene->positions[t * 9], 36);
+			uint32_t count = 1;
+			while (t + count < n && material_of(t + count) == m)
+				count++;
+			uint32_t &at = held_of(m) ? at_held : (!num_materials || !OneSided(scene->materials[m])) ? at_solid : at_glass;
+			const uint32_t to = at;
+			at += count;
+			memcpy(&corners[to * 9], &scene->positions[t * 9], (size_t)count * 36);
 			if (scene->normals)
-				memcpy(&normals[to * 9], &scene->normals[t * 9], 36);
+				memcpy(&normals[to * 9], &scene->normals[t * 9], (size_t)count * 36);
 			if (scene->prev_positions)
-				memcpy(&prev[to * 9], &scene->prev_positions[t * 9], 36);
-			if (scene->uvs)
-				memcpy(tris[to].uv, &scene->uvs[t * 6], 24);
-			else
-				memset(tris[to].uv, 0, 24);
-			tris[to].material = m;
-			tris[to].pad = 0;
+				memcpy(&prev[to * 9], &scene->prev_positions[t * 9], (size_t)count * 36);
+			for (uint32_t i = 0; i < count; i++)
+			{
+				GpuTri out;
+				if (scene->uvs)
+					memcpy(out.uv, &scene->uvs[(t + i) * 6], 24);
+				else
+					memset(out.uv, 0, 24);
+				out.material = m;
+				out.pad = 0;
+				tris[to + i] = out;
+			}
+			t += count;
 		}
 		hash = HashBytes(scene->positions, (size_t)n * 36, hash);
 	}
@@ -3006,13 +3044,15 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	// filtered, each pass reading what the one before wrote
 	static const char *const kPassNames[] = {"filter 1", "filter 2", "filter 3", "filter 4", "filter 5", "filter 6",
 		"filter 7", "filter 8"};
+	// (the first from the filter's second set, where the pass before left
+	// what was gathered and the noise in it: see temporal.comp)
 	mark(4, kPassNames[0]);
 	int source = 0;
 	for (int i = 0; i < s->filter_passes; i++)
 	{
 		if (i)
 			mark(4, kPassNames[std::min(i, 7)], true);
-		run(s->atrous_pipeline, source, i & 1, 1 << i);
+		run(s->atrous_pipeline, i ? source : 2, i & 1, 1 << i);
 		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 		source = 1 + (i & 1);
 	}

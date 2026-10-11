@@ -16,12 +16,14 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 find_package(Vulkan REQUIRED COMPONENTS glslc)
 set(PT_SHADER_DIR ${CMAKE_BINARY_DIR}/pt_shaders)
 file(MAKE_DIRECTORY ${PT_SHADER_DIR})
+# parts of the tracer this game has no use for are left out of its shaders: see scene.glsl
+set(PT_SHADER_DEFINES -DPT_NO_WATER -DPT_NO_FOG -DPT_NO_BLUR -DPT_NO_EXPORT)
 set(PT_SHADER_INC)
 foreach(shader blit.vert blit.frag trace.comp temporal.comp change.comp atrous.comp compose.comp
 		bloom.comp grade.comp resolve.comp)
 	add_custom_command(
 		OUTPUT ${PT_SHADER_DIR}/${shader}.inc
-		COMMAND Vulkan::glslc -mfmt=c --target-env=vulkan1.3 -O
+		COMMAND Vulkan::glslc -mfmt=c --target-env=vulkan1.3 -O ${PT_SHADER_DEFINES}
 			${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader} -o ${PT_SHADER_DIR}/${shader}.inc
 		DEPENDS ${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader} ${CMAKE_SOURCE_DIR}/pt/rtx/shaders/scene.glsl
 		VERBATIM)
@@ -32,6 +34,11 @@ target_include_directories(pt_rtx PRIVATE ${PT_SHADER_DIR})
 target_include_directories(pt_rtx PUBLIC pt/include)
 target_link_libraries(pt_rtx PUBLIC Vulkan::Vulkan)
 target_compile_features(pt_rtx PUBLIC cxx_std_17)
+# -DPT_PERF=ON: the tracer times each part of its work, for r_ptShowTimes
+option(PT_PERF "time each part of the path tracer's work" OFF)
+if(PT_PERF)
+	target_compile_definitions(pt_rtx PUBLIC PT_PERF)
+endif()
 # the tracer is all small inlined functions; RelWithDebInfo would otherwise hold inlining back
 target_compile_options(pt_rtx PRIVATE /Ob2 /Oi /Ot /EHsc)
 

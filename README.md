@@ -67,6 +67,7 @@ All are console variables as well; most are saved.
 | `com_maxFPS` | the most frames a second (144); the game still runs 60 times a second, and between two of those the view goes on turning and moving; 0 is a frame for each of the 60, as the game was |
 | `r_lerpWorld` | 1 draws what the game moved in its last step on its way there, each frame: doors, lifts, monsters, lights (1); 0 steps them 60 times a second |
 | `r_ptView` | draws the scene some other way: 4 light alone, 7 base colour, 8 normals |
+| `r_ptShowTimes` | prints where the time of a frame goes, averaged over this many frames: the frame, the models read, and each part of the card's work (0) |
 
 Commands: `reloadPathTrace` hands the map to the tracer again, which
 happens by itself when a setting that needs it is changed;
