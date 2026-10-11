@@ -225,6 +225,25 @@ typedef struct pt_point_light_s
 								   shadows are soft. Nothing is drawn of it: for
 								   that, triangles that emit the same
 								   (PT_MAT_SAMPLED), no larger than it is. */
+	int			picture;		/* spotlights, not balls: 0 for none, else 1 + a
+								   texture, numbered as a material's texture is,
+								   that the light shines through as a projector
+								   does through a slide: what it sends any one
+								   way is intensity times the texel that lies
+								   that way, its red, green and blue as numbers
+								   from 0 to 1, not as colours for a display;
+								   alpha is not looked at. The slide may stand
+								   anywhere in front of the light, at any angle
+								   to it: a point d from origin is lit through
+								   the texel at s = d . picture_s / d . picture_q
+								   across and t = d . picture_t / d . picture_q
+								   down, each 0 to 1 over the picture. Outside
+								   that, and where d . picture_q is not above
+								   0, there is no light. direction and cone_cos
+								   are still to be given, and are to hold all
+								   of the picture: by them the light is looked
+								   for. RTX backend only */
+	float		picture_s[3], picture_t[3], picture_q[3];
 } pt_point_light_t;
 
 typedef struct pt_world_s

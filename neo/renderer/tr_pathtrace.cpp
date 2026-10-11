@@ -70,7 +70,8 @@ file is what stands between the two:
   PT_DrawOverlay.
 
 What is not there yet: other translucent surfaces, particles, surfaces the game
-bends as it draws them, and all that the lights' own pictures do.
+bends as it draws them, and of the lights' own pictures all but the one a
+pyramid shines through, standing still: see PT_LightFor.
 
 */
 
@@ -164,6 +165,8 @@ static struct {
 	idList<ptWorldLight_t>	worldLights;		// its lights, as they were then
 	idList<float>			lightScales;		// 3 for each of them: what to multiply it by this frame
 	idList<pt_point_light_t>	frameLights;	// and the lights it was not handed with
+	idList<const idImage *>	lightImages;		// the pictures those shine through that the tracer has
+	idList<int>				lightHandles;		// and its handle for each, or -1
 	idStr					mapName;
 	ID_TIME_T				mapTimeStamp;
 	bool					restart;
@@ -209,6 +212,8 @@ typedef struct {
 	idList<unsigned int>		indices;
 	idList<unsigned int>		triMaterials;
 	idList<pt_point_light_t>	lights;
+	idList<const idImage *>		lightImages;	// the pictures its lights shine through that are among the textures
+	idList<int>					lightTextures;	// and which is each one's
 	const idImage *				sky;			// the six pictures of the first sky met with, or NULL
 } ptWorldBuild_t;
 
@@ -237,6 +242,8 @@ void PT_Shutdown( void ) {
 	pt.worldLights.Clear();
 	pt.lightScales.Clear();
 	pt.frameLights.Clear();
+	pt.lightImages.Clear();
+	pt.lightHandles.Clear();
 	pt.positions.Clear();
 	pt.uvs.Clear();
 	pt.normals.Clear();
@@ -835,8 +842,15 @@ The tracer's is a point whose light thins with the square of the distance,
 so it is told not to thin it at all as far as the light goes (core), and
 given the brightness that lights a surface facing it as the game would. A
 box is handed over as a box, which the tracer fades as the game does, from
-its middle to its faces. A pyramid is a cone that fades at its far end.
-A light the game casts no shadows from is one nothing stops.
+its middle to its faces. A light the game casts no shadows from is one
+nothing stops.
+
+A pyramid the game lights through a picture, which it lays across the
+pyramid from corner to corner: where the picture is dark there is no light,
+and that is all the shape most of them have, the player's flashlight among
+them. It is handed over as the cone that holds the pyramid, fading at its
+far end, with where the picture stands in it; the picture itself is for
+whoever hands the light on to add (PT_WorldPicture, PT_FramePicture).
 
 Fills in the light as one of colour 1, and the colour it has in this view.
 Returns false for what is not a light to the tracer, or not in this view.
@@ -878,19 +892,27 @@ static bool PT_LightFor( const idRenderLightLocal *def, const viewDef_t *viewDef
 	} else {
 		idVec3	dir = parms.target * parms.axis;
 		float	length = dir.Normalize();
-		float	side = Max( parms.right.Length(), parms.up.Length() );
+		float	cone = 1.0f;
 
 		if ( length <= 0.0f ) {
 			return false;
 		}
+		// the cone that holds the pyramid's four corners
+		for ( i = 0; i < 4; i++ ) {
+			idVec3 corner = ( parms.target + ( ( i & 1 ) ? parms.right : -parms.right ) + ( ( i & 2 ) ? parms.up : -parms.up ) ) * parms.axis;
+			corner.Normalize();
+			cone = Min( cone, corner * dir );
+		}
 		reach = parms.end.LengthSqr() > 0.0f ? parms.end.Length() : length;
-		light.origin[0] = parms.origin.x;
-		light.origin[1] = parms.origin.y;
-		light.origin[2] = parms.origin.z;
-		light.direction[0] = dir.x;
-		light.direction[1] = dir.y;
-		light.direction[2] = dir.z;
-		light.cone_cos = length / idMath::Sqrt( length * length + side * side );
+		for ( i = 0; i < 3; i++ ) {
+			light.origin[i] = parms.origin[i];
+			light.direction[i] = dir[i];
+			// the game's own planes for where its picture lies: all three pass through the light
+			light.picture_s[i] = def->lightProject[0][i];
+			light.picture_t[i] = def->lightProject[1][i];
+			light.picture_q[i] = def->lightProject[2][i];
+		}
+		light.cone_cos = Max( cone, 0.001f );
 	}
 	if ( reach <= 0.0f ) {
 		return false;
@@ -923,6 +945,96 @@ static float PT_Level( const idVec3 &colour ) {
 
 /*
 ================
+PT_LightImage
+
+The picture a pyramid of light shines through: that of the first stage of
+its material that has one. The game adds up what every stage shows, each
+stage's picture in a colour of its own, and may slide or turn a picture as
+it goes; here the one picture stands still, in the colours of all the
+stages together.
+================
+*/
+static const idImage *PT_LightImage( const idRenderLightLocal *def ) {
+	const idMaterial *shader = def->lightShader;
+
+	for ( int i = 0; i < shader->GetNumStages(); i++ ) {
+		const shaderStage_t *stage = shader->GetStage( i );
+		if ( stage->texture.image && !stage->texture.cinematic && stage->texture.dynamic == DI_STATIC ) {
+			return stage->texture.image;
+		}
+	}
+	return NULL;
+}
+
+/*
+================
+PT_ReadLightPicture
+
+Its pixels, to be freed with R_StaticFree. A light with no picture that can
+be read (the renderer makes up a few itself) is given a white one: it fills
+its pyramid evenly.
+================
+*/
+static byte *PT_ReadLightPicture( const idImage *image, int &width, int &height ) {
+	byte *pic = PT_ReadImage( image, width, height );
+
+	if ( !pic ) {
+		width = height = 4;
+		pic = (byte *) R_StaticAlloc( 4 * 4 * 4 );
+		memset( pic, 255, 4 * 4 * 4 );
+	}
+	return pic;
+}
+
+/*
+================
+PT_WorldPicture
+
+A pyramid's picture among the textures of a world that is being gathered:
+1 + its place there, as pt_point_light_t's picture has it.
+================
+*/
+static int PT_WorldPicture( ptWorldBuild_t &build, const idRenderLightLocal *def ) {
+	const idImage	*image = PT_LightImage( def );
+	int				i = build.lightImages.FindIndex( image );
+
+	if ( i < 0 ) {
+		pt_texture_t texture;
+		byte *pic = PT_ReadLightPicture( image, texture.width, texture.height );
+		texture.pixels = (const uint32_t *) pic;
+		build.pixels.Append( pic );
+		i = build.lightImages.Append( image );
+		build.lightTextures.Append( build.textures.Append( texture ) );
+	}
+	return build.lightTextures[i] + 1;
+}
+
+/*
+================
+PT_FramePicture
+
+The same for a light that is handed over with a frame: the tracer keeps the
+picture from then on, and 1 + its handle is returned, 0 if it would not
+take it.
+================
+*/
+static int PT_FramePicture( const idRenderLightLocal *def ) {
+	const idImage	*image = PT_LightImage( def );
+	int				i = pt.lightImages.FindIndex( image );
+
+	if ( i < 0 ) {
+		pt_texture_t texture;
+		byte *pic = PT_ReadLightPicture( image, texture.width, texture.height );
+		texture.pixels = (const uint32_t *) pic;
+		i = pt.lightImages.Append( image );
+		pt.lightHandles.Append( pt.backend->texture_create( pt.backend, &texture ) );
+		R_StaticFree( pic );
+	}
+	return pt.lightHandles[i] + 1;
+}
+
+/*
+================
 PT_AddLight
 
 A light the world is handed with. It is given as white and as bright as
@@ -937,6 +1049,9 @@ static void PT_AddLight( ptWorldBuild_t &build, int defIndex, const idRenderLigh
 
 	if ( !PT_LightFor( def, viewDef, worldLight.light, colour ) ) {
 		return;
+	}
+	if ( !def->parms.pointLight ) {
+		worldLight.light.picture = PT_WorldPicture( build, def );
 	}
 	worldLight.defIndex = defIndex;
 	worldLight.level = 1.0f;
@@ -993,6 +1108,8 @@ static void PT_FrameLights( const viewDef_t *viewDef ) {
 			moved += idMath::Fabs( light.origin[j] - was.light.origin[j] );
 			moved += idMath::Fabs( light.box_origin[j] - was.light.box_origin[j] ) + idMath::Fabs( light.box_size[j] - was.light.box_size[j] );
 			moved += idMath::Fabs( light.direction[j] - was.light.direction[j] ) * 100.0f;
+			// (one that turns about the way it points takes its picture round with it)
+			moved += ( idMath::Fabs( light.picture_s[j] - was.light.picture_s[j] ) + idMath::Fabs( light.picture_t[j] - was.light.picture_t[j] ) ) * 100.0f;
 		}
 		if ( moved > 0.5f ) {
 			continue;		// it is somewhere else now, and one of the frame's
@@ -1015,6 +1132,9 @@ static void PT_FrameLights( const viewDef_t *viewDef ) {
 		}
 		for ( j = 0; j < 3; j++ ) {
 			frameLight.light.intensity[j] *= colour[j] * scale;
+		}
+		if ( !world->lightDefs[i]->parms.pointLight ) {
+			frameLight.light.picture = PT_FramePicture( world->lightDefs[i] );
 		}
 		const idVec3 origin( frameLight.light.origin[0], frameLight.light.origin[1], frameLight.light.origin[2] );
 		frameLight.away = ( origin - viewDef->renderView.vieworg ).Length() - frameLight.light.reach;

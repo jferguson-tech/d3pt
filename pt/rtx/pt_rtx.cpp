@@ -170,7 +170,15 @@ struct GpuLight
 	float		box_origin[3];	// a point: its lit volume, if all of box_size is above 0
 	float		no_shadow;		// a point: above 0, nothing stops its light
 	float		box_size[3];
-	float		pad;
+	uint32_t	picture;		// a spotlight: slot + 1 of the picture it shines through, 0 = none
+	// where the picture stands, see pt_point_light_t: the shaders' Slide, which
+	// they read only for a light that has a picture
+	float		picture_s[3];
+	float		pad0;
+	float		picture_t[3];
+	float		pad1;
+	float		picture_q[3];
+	float		pad2;
 };
 const uint32_t kPointLight = 0xffffff00u;
 
@@ -1565,6 +1573,21 @@ float Clamp01(float v)
 	return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
 }
 
+// The picture a spotlight shines through, as the shaders read it. slot is
+// where the picture is among the textures, or -1.
+void SetPicture(const RtxBackend *s, GpuLight &out, const pt_point_light_t &in, int slot)
+{
+	if (in.cone_cos <= 0.0f || slot < 0 || slot >= (int)kMaxTextures || !s->textures[slot].view)
+		return;
+	out.picture = (uint32_t)slot + 1;
+	for (int a = 0; a < 3; a++)
+	{
+		out.picture_s[a] = in.picture_s[a];
+		out.picture_t[a] = in.picture_t[a];
+		out.picture_q[a] = in.picture_q[a];
+	}
+}
+
 // A material as the shaders read it. slot() turns the numbers the host
 // gave its textures into slots; handles are slots already.
 template <class F>
@@ -2187,6 +2210,8 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 				out.box_size[a] = l.box_size[a];
 			}
 			out.no_shadow = l.no_shadow ? 1.0f : 0.0f;
+			if (l.given >= 0 && l.given < in->num_lights)
+				SetPicture(s, out, in->lights[l.given], slot(in->lights[l.given].picture - 1));
 		}
 		else
 		{
@@ -2655,6 +2680,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 					lights[i].box_size[a] = size[a];
 				}
 			lights[i].no_shadow = scene->lights[i].no_shadow ? 1.0f : 0.0f;
+			SetPicture(s, lights[i], scene->lights[i], scene->lights[i].picture - 1);		// a handle is a slot already
 		}
 	}
 	if (num_lights)

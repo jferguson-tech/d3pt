@@ -136,9 +136,29 @@ struct Light
 	vec3	box_origin;	// points: a lit volume, if box_size is above 0
 	float	no_shadow;	// points: above 0, nothing stops its light
 	vec3	box_size;
-	float	pad;
+	uint	picture;	// spotlights: slot + 1 of the picture it shines through, 0 = none
 };
 const uint POINT_LIGHT = 0xffffff00u;
+
+// Where the picture a spotlight shines through stands: see LightPicture.
+struct Slide
+{
+	vec3	s;
+	float	pad0;
+	vec3	t;
+	float	pad1;
+	vec3	q;
+	float	pad2;
+};
+
+// A light as the buffers hold it. Every light that is weighed is read, and
+// few of them have a picture: the slide is kept apart from the rest so that
+// it is read for those alone.
+struct LightSlot
+{
+	Light	light;
+	Slide	slide;
+};
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 
@@ -198,8 +218,8 @@ layout(set = 0, binding = 8) uniform texture2D textures[];
 layout(set = 0, binding = 9) uniform sampler nearest_sampler;
 layout(set = 0, binding = 10) uniform sampler smooth_sampler;
 
-layout(std430, set = 0, binding = 11) readonly buffer WorldLights { Light l[]; } world_lights;
-layout(std430, set = 0, binding = 12) readonly buffer FrameLights { Light l[]; } frame_lights;
+layout(std430, set = 0, binding = 11) readonly buffer WorldLights { LightSlot l[]; } world_lights;
+layout(std430, set = 0, binding = 12) readonly buffer FrameLights { LightSlot l[]; } frame_lights;
 // 256 light styles, then the tables the frame block says where to find
 layout(std430, set = 0, binding = 13) readonly buffer Tables { float v[]; } tables;
 layout(std430, set = 0, binding = 14) readonly buffer Indices { uint v[]; } indices;
@@ -520,6 +540,27 @@ float LightFade(Light l, vec3 p, float dist2)
 		return w * w;
 	}
 	return 1.0;
+}
+
+// What a spotlight that shines through a picture sends to p, of what it
+// would without one: the texel that lies that way, as the number it is, and
+// nothing where the picture does not reach. See pt_point_light_t's picture.
+vec3 LightPicture(Light l, Slide slide, vec3 p)
+{
+	if (l.picture == 0u)
+		return vec3(1.0);
+	const vec3 d = p - l.origin;
+	const float q = dot(d, slide.q);
+	if (q <= 0.0)
+		return vec3(0.0);
+	const vec2 at = vec2(dot(d, slide.s), dot(d, slide.t)) / q;
+	if (min(at.x, at.y) < 0.0 || max(at.x, at.y) > 1.0)
+		return vec3(0.0);
+	// (the sampler repeats: no further out than the middle of the last texels,
+	// or one edge of the picture shows at the other)
+	const int slot = int(l.picture) - 1;
+	const vec2 inset = 0.5 / vec2(textureSize(sampler2D(textures[nonuniformEXT(slot)], smooth_sampler), 0));
+	return Texel(slot, clamp(at, inset, 1.0 - inset), true).rgb;
 }
 
 // The instances of the scene carry one of these masks: everything but what
@@ -1634,7 +1675,7 @@ Lit DirectLights(Surface s, bool first_hit)
 			li = indices.v[cell_lights + j] >> 5;
 			cell_pdf = tables.v[cell_pdfs + j];
 		}
-		const Light l = world_lights.l[li];
+		const Light l = world_lights.l[li].light;
 		float pdf = use_global * l.pdf + (1.0 - use_global) * cell_pdf;
 
 		vec3 y, e, light_n = vec3(0.0);
@@ -1687,6 +1728,8 @@ Lit DirectLights(Surface s, bool first_hit)
 			if (fade <= 0.0)
 				continue;
 			geom *= fade;
+			if (l.picture != 0u)
+				e *= LightPicture(l, world_lights.l[li].slide, s.p);
 		}
 		if (area)
 		{
@@ -1811,7 +1854,7 @@ Lit DirectWorld(Surface s, bool first_hit)
 }
 
 // a point light's contribution, ignoring occlusion
-Lit PointLight(Surface s, Light l)
+Lit PointLight(Surface s, Light l, Slide slide)
 {
 	const vec3 d = l.origin - s.p;
 	const float dist2 = dot(d, d);
@@ -1825,7 +1868,7 @@ Lit PointLight(Surface s, Light l)
 	if (fade <= 0.0)
 		return Lit(vec3(0.0), vec3(0.0));
 	geom *= fade;
-	return Reflect(s, wi, l.emission * geom);
+	return Reflect(s, wi, l.emission * LightPicture(l, slide, s.p) * geom);
 }
 
 // A point on a ball of light, drawn evenly over as much of the ball as shows
@@ -1860,12 +1903,12 @@ vec3 SampleBall(Light l, vec3 p, out vec3 y, out vec3 wi)
 // One of the frame's lights on a surface, with nothing in the way; at is
 // where to look to see whether anything is. A point gives its all, a ball
 // what one point drawn on it stands for.
-Lit FrameLight(Surface s, Light l, out vec3 at)
+Lit FrameLight(Surface s, Light l, Slide slide, out vec3 at)
 {
 	if (l.radius <= 0.0)
 	{
 		at = l.origin;
-		return PointLight(s, l);
+		return PointLight(s, l, slide);
 	}
 	vec3 wi;
 	const vec3 e = SampleBall(l, s.p, at, wi);
@@ -1876,10 +1919,10 @@ Lit FrameLight(Surface s, Light l, out vec3 at)
 // others. For a point that is what it gives; a ball is weighed as if it were
 // all at its middle, but for where the middle is under the surface's horizon
 // and some of the ball over it: there it is not to be left out.
-float FrameLightWeight(Surface s, Light l)
+float FrameLightWeight(Surface s, Light l, Slide slide)
 {
 	if (l.radius <= 0.0 || s.medium)
-		return Importance(s, PointLight(s, l));
+		return Importance(s, PointLight(s, l, slide));
 	const vec3 d = l.origin - s.p;
 	const float dist2 = dot(d, d);
 	if (dist2 <= l.radius * l.radius)
@@ -1907,25 +1950,25 @@ Lit FrameOne(Surface s, bool balls)
 
 	float total = 0.0;
 	for (int i = 0; i < count; i++)
-		if (!balls || frame_lights.l[i].radius > 0.0)
-			total += FrameLightWeight(s, frame_lights.l[i]);
+		if (!balls || frame_lights.l[i].light.radius > 0.0)
+			total += FrameLightWeight(s, frame_lights.l[i].light, frame_lights.l[i].slide);
 	if (total <= 0.0)
 		return none;
 
 	float pick = Rand() * total;
 	for (int i = 0; i < count; i++)
 	{
-		if (balls && frame_lights.l[i].radius <= 0.0)
+		if (balls && frame_lights.l[i].light.radius <= 0.0)
 			continue;
-		const float imp = FrameLightWeight(s, frame_lights.l[i]);
+		const float imp = FrameLightWeight(s, frame_lights.l[i].light, frame_lights.l[i].slide);
 		pick -= imp;
 		if (pick <= 0.0 && imp > 0.0)
 		{
 			vec3 at;
-			Lit f = FrameLight(s, frame_lights.l[i], at);
+			Lit f = FrameLight(s, frame_lights.l[i].light, frame_lights.l[i].slide, at);
 			if (Importance(s, f) <= 0.0)
 				return none;
-			const float clear = VisibleTo(s, frame_lights.l[i], at);
+			const float clear = VisibleTo(s, frame_lights.l[i].light, at);
 			if (clear <= 0.0)
 				return none;
 			f.diffuse *= clear * total / imp;
@@ -1956,10 +1999,10 @@ Lit DirectFrameAll(Surface s)
 		return sum;
 	for (int i = 0; i < fr.counts.y; i++)
 	{
-		if (frame_lights.l[i].radius > 0.0)
+		if (frame_lights.l[i].light.radius > 0.0)
 			continue;
-		const Lit f = PointLight(s, frame_lights.l[i]);
-		if (Importance(s, f) > 0.0 && VisibleTo(s, frame_lights.l[i], frame_lights.l[i].origin) > 0.0)
+		const Lit f = PointLight(s, frame_lights.l[i].light, frame_lights.l[i].slide);
+		if (Importance(s, f) > 0.0 && VisibleTo(s, frame_lights.l[i].light, frame_lights.l[i].light.origin) > 0.0)
 		{
 			sum.diffuse += f.diffuse;
 			sum.specular += f.specular;
@@ -1981,7 +2024,7 @@ void DirectEveryLight(Surface s, out vec3 diffuse, out vec3 specular)
 	const int of_map = fr.counts.x;
 	for (int i = 0; i < of_map + fr.counts.y; i++)
 	{
-		const Light l = i < of_map ? world_lights.l[i] : frame_lights.l[i - of_map];
+		const Light l = i < of_map ? world_lights.l[i].light : frame_lights.l[i - of_map].light;
 		vec3 y = l.origin, e = l.emission, light_n = vec3(0.0);
 		const bool area = i < of_map && l.tri < POINT_LIGHT;
 		if (area)
@@ -2018,6 +2061,8 @@ void DirectEveryLight(Surface s, out vec3 diffuse, out vec3 specular)
 			if (fade <= 0.0)
 				continue;
 			geom *= fade;
+			if (l.picture != 0u)
+				e *= LightPicture(l, i < of_map ? world_lights.l[i].slide : frame_lights.l[i - of_map].slide, s.p);
 		}
 		if (area)
 		{
@@ -2044,9 +2089,9 @@ float FrameLightLevel(Surface s, vec3 flash_light, vec3 eye, vec3 dir, float rea
 	float level = Luminance(flash_light);
 	for (int i = 0; i < fr.counts.y; i++)
 	{
-		const Light l = frame_lights.l[i];
+		const Light l = frame_lights.l[i].light;
 		if (l.radius > 0.0)
-			level += Importance(s, PointLight(s, l));
+			level += Importance(s, PointLight(s, l, frame_lights.l[i].slide));
 		if (fog > 0.0)
 		{
 			const vec3 d = l.origin - eye;
