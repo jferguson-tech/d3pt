@@ -22,6 +22,7 @@
 #else
 #define VK_USE_PLATFORM_XLIB_KHR
 #include <X11/Xlib.h>
+#include <unistd.h>
 #define PT_SURFACE_EXTENSION VK_KHR_XLIB_SURFACE_EXTENSION_NAME
 #endif
 #include <vulkan/vulkan.h>
@@ -313,6 +314,8 @@ struct RtxBackend
 	VkDeviceMemory		shared_memory = VK_NULL_HANDLE;
 	VkDeviceSize		shared_size = 0;
 	void				*shared_handle = nullptr;
+	bool				any_card = true;	// false: only the card with this UUID
+	uint8_t				card_uuid[VK_UUID_SIZE] = {};
 	VkSurfaceFormatKHR	surface_format{};
 	VkExtent2D			extent{};
 	std::vector<VkImage>		swap_images;
@@ -611,7 +614,15 @@ void PickDevice(RtxBackend *s)
 		RtFeatures feat;
 		uint32_t family = 0;
 
-		if (props.vendorID != VENDOR_NVIDIA)
+		VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+		VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+		props2.pNext = &id;
+		if (!s->any_card)
+			vkGetPhysicalDeviceProperties2(gpu, &props2);
+
+		if (!s->any_card && memcmp(id.deviceUUID, s->card_uuid, VK_UUID_SIZE))
+			why = "not the card asked for";
+		else if (props.vendorID != VENDOR_NVIDIA)
 			why = "not an Nvidia GPU";
 		else if (props.apiVersion < VK_API_VERSION_1_3)
 			why = "driver does not support Vulkan 1.3";
@@ -675,6 +686,9 @@ void CreateDevice(RtxBackend *s)
 #ifdef _WIN32
 	if (s->shared)
 		extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+#else
+	if (s->shared)
+		extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
 #endif
 	dci.enabledExtensionCount = (uint32_t)extensions.size();
 	dci.ppEnabledExtensionNames = extensions.data();
@@ -827,11 +841,15 @@ uint32_t FindMemoryType(const RtxBackend *s, uint32_t bits, VkMemoryPropertyFlag
 void CreateShared(RtxBackend *s)
 {
 #ifdef _WIN32
+	const VkExternalMemoryHandleTypeFlagBits kSharedHandleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+#else
+	const VkExternalMemoryHandleTypeFlagBits kSharedHandleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+#endif
 	s->surface_format.format = VK_FORMAT_R8G8B8A8_UNORM;
 	s->extent = {(uint32_t)s->width, (uint32_t)s->height};
 
 	VkExternalMemoryImageCreateInfo emi{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
-	emi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+	emi.handleTypes = kSharedHandleType;
 	VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
 	ici.pNext = &emi;
 	ici.imageType = VK_IMAGE_TYPE_2D;
@@ -849,7 +867,7 @@ void CreateShared(RtxBackend *s)
 	VkMemoryRequirements mr;
 	vkGetImageMemoryRequirements(s->device, s->shared_image, &mr);
 	VkExportMemoryAllocateInfo ema{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
-	ema.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+	ema.handleTypes = kSharedHandleType;
 	VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
 	mai.pNext = &ema;
 	mai.allocationSize = mr.size;
@@ -858,9 +876,10 @@ void CreateShared(RtxBackend *s)
 	Check(vkBindImageMemory(s->device, s->shared_image, s->shared_memory, 0), "vkBindImageMemory (shared)");
 	s->shared_size = mr.size;
 
+#ifdef _WIN32
 	VkMemoryGetWin32HandleInfoKHR ghi{VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
 	ghi.memory = s->shared_memory;
-	ghi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+	ghi.handleType = kSharedHandleType;
 	HANDLE handle = nullptr;
 	// an extension's function: the loader's library has no entry for it
 	const auto get_handle = (PFN_vkGetMemoryWin32HandleKHR)vkGetDeviceProcAddr(s->device, "vkGetMemoryWin32HandleKHR");
@@ -868,6 +887,19 @@ void CreateShared(RtxBackend *s)
 		Throw("vkGetMemoryWin32HandleKHR is missing");
 	Check(get_handle(s->device, &ghi, &handle), "vkGetMemoryWin32HandleKHR");
 	s->shared_handle = handle;
+#else
+	VkMemoryGetFdInfoKHR gfi{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+	gfi.memory = s->shared_memory;
+	gfi.handleType = kSharedHandleType;
+	int fd = -1;
+	// an extension's function: the loader's library has no entry for it
+	const auto get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(s->device, "vkGetMemoryFdKHR");
+	if (!get_fd)
+		Throw("vkGetMemoryFdKHR is missing");
+	Check(get_fd(s->device, &gfi, &fd), "vkGetMemoryFdKHR");
+	// kept as descriptor + 1, so that descriptor 0 is not taken for none
+	s->shared_handle = (void *)(intptr_t)(fd + 1);
+#endif
 
 	VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
 	vci.image = s->shared_image;
@@ -878,9 +910,6 @@ void CreateShared(RtxBackend *s)
 	Check(vkCreateImageView(s->device, &vci, nullptr, &view), "vkCreateImageView (shared)");
 	s->swap_images.push_back(s->shared_image);
 	s->swap_views.push_back(view);
-#else
-	Throw("a shared picture is only made on Windows");
-#endif
 }
 
 void RecreateSwapchain(RtxBackend *s)
@@ -3749,6 +3778,8 @@ void Destroy(pt_backend_t *b)
 		if (s->shared_memory) vkFreeMemory(s->device, s->shared_memory, nullptr);
 #ifdef _WIN32
 		if (s->shared_handle) CloseHandle((HANDLE)s->shared_handle);
+#else
+		if (s->shared_handle) close((int)(intptr_t)s->shared_handle - 1);
 #endif
 		if (s->sem_acquire) vkDestroySemaphore(s->device, s->sem_acquire, nullptr);
 		if (s->fence) vkDestroyFence(s->device, s->fence, nullptr);
@@ -3775,7 +3806,11 @@ int SharedImage(pt_backend_t *b, pt_shared_image_t *out)
 
 	if (!s->shared || !s->shared_handle)
 		return 0;
+#ifdef _WIN32
 	out->handle = s->shared_handle;
+#else
+	out->handle = (void *)((intptr_t)s->shared_handle - 1);
+#endif
 	out->size = s->shared_size;
 	out->width = (int)s->extent.width;
 	out->height = (int)s->extent.height;
@@ -3796,6 +3831,11 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	s->base.present = Present;
 	s->base.shared_image = SharedImage;
 	s->shared = ci->shared != 0;
+	if (ci->device_uuid)
+	{
+		s->any_card = false;
+		memcpy(s->card_uuid, ci->device_uuid, VK_UUID_SIZE);
+	}
 	s->base.stats = Stats;
 	s->base.stages = Stages;
 #ifdef PT_PERF
@@ -3842,10 +3882,13 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 			Check(vkCreateWin32SurfaceKHR(s->instance, &wci, nullptr, &s->surface), "vkCreateWin32SurfaceKHR");
 		}
 #else
-		VkXlibSurfaceCreateInfoKHR xci{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
-		xci.dpy = (Display *)ci->hinstance;
-		xci.window = (Window)(uintptr_t)ci->hwnd;
-		Check(vkCreateXlibSurfaceKHR(s->instance, &xci, nullptr, &s->surface), "vkCreateXlibSurfaceKHR");
+		if (!s->shared)
+		{
+			VkXlibSurfaceCreateInfoKHR xci{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
+			xci.dpy = (Display *)ci->hinstance;
+			xci.window = (Window)(uintptr_t)ci->hwnd;
+			Check(vkCreateXlibSurfaceKHR(s->instance, &xci, nullptr, &s->surface), "vkCreateXlibSurfaceKHR");
+		}
 #endif
 
 		PickDevice(s);

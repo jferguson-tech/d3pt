@@ -366,17 +366,6 @@ set(ENGINE_SOURCES
 	neo/sound/OggVorbis/oggsrc/bitwise.c
 	neo/sound/OggVorbis/oggsrc/framing.c
 	neo/sys/sys_local.cpp
-	neo/sys/win32/win_cpu_x64.cpp
-	neo/sys/win32/win_crash.cpp
-	neo/sys/win32/win_glimp.cpp
-	neo/sys/win32/win_input.cpp
-	neo/sys/win32/win_main.cpp
-	neo/sys/win32/win_net.cpp
-	neo/sys/win32/win_qgl.cpp
-	neo/sys/win32/win_shared.cpp
-	neo/sys/win32/win_snd.cpp
-	neo/sys/win32/win_syscon.cpp
-	neo/sys/win32/win_wndproc.cpp
 	neo/tools/compilers/aas/AASBuild.cpp
 	neo/tools/compilers/aas/AASBuild_file.cpp
 	neo/tools/compilers/aas/AASBuild_gravity.cpp
@@ -432,4 +421,41 @@ set(ENGINE_SOURCES
 	neo/renderer/draw_exp_stub.cpp
 	neo/tools/edit_stub.cpp
 	neo/tools/guied/GEWindowWrapper_stub.cpp
+)
+
+# the operating system's side of the engine: one of these is added to ENGINE_SOURCES
+set(SYS_WIN32_SOURCES
+	neo/sys/win32/win_cpu_x64.cpp
+	neo/sys/win32/win_crash.cpp
+	neo/sys/win32/win_glimp.cpp
+	neo/sys/win32/win_input.cpp
+	neo/sys/win32/win_main.cpp
+	neo/sys/win32/win_net.cpp
+	neo/sys/win32/win_qgl.cpp
+	neo/sys/win32/win_shared.cpp
+	neo/sys/win32/win_snd.cpp
+	neo/sys/win32/win_syscon.cpp
+	neo/sys/win32/win_wndproc.cpp
+)
+
+set(SYS_LINUX_SOURCES
+	neo/sys/posix/posix_input.cpp
+	neo/sys/posix/posix_main.cpp
+	neo/sys/posix/posix_net.cpp
+	neo/sys/posix/posix_signal.cpp
+	neo/sys/posix/posix_threads.cpp
+	neo/sys/linux/glimp.cpp
+	neo/sys/linux/input.cpp
+	neo/sys/linux/linux_qgl.cpp
+	neo/sys/linux/main.cpp
+	neo/sys/linux/sound.cpp
+	neo/sys/linux/sound_alsa.cpp
+	neo/sys/linux/stack.cpp
+	neo/sys/linux/libXNVCtrl/NVCtrl.c
+	# functions GCC is kept from optimizing, each in a file of its own
+	neo/tools/compilers/dmap/optimize_gcc.cpp
+)
+
+set(IDLIB_GCC_SOURCES
+	neo/idlib/bv/Frustum_gcc.cpp
 )

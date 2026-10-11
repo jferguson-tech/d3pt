@@ -19,17 +19,24 @@ typedef struct pt_create_s
 	pt_log_fn	log;			/* may be NULL */
 	int			simd;			/* CPU backend: 0 = built for the widest instructions the
 								   processor has, 1 = for SSE only, to compare the two */
-	int			shared;			/* RTX on Windows: nothing is put on the window, and
+	int			shared;			/* RTX: nothing is put on the window, and
 								   hinstance and hwnd are not looked at. present draws
 								   into a picture that another graphics API in the
 								   same process can open, see shared_image, and
 								   returns when it is finished */
+	const unsigned char *device_uuid;	/* RTX: NULL, or the 16 bytes by which Vulkan
+								   (deviceUUID) and OpenGL (GL_DEVICE_UUID_EXT) both
+								   know a card: no other card is used. A shared
+								   picture can only be opened on the card it is on. */
 } pt_create_t;
 
 /* The picture a backend made with shared draws into: width * height pixels of
    four bytes R,G,B,A, top row first. handle is a Windows handle to its memory,
    of the opaque kind Vulkan exports (OpenGL: GL_HANDLE_TYPE_OPAQUE_WIN32_EXT),
-   size bytes long with the picture at its start. It belongs to the backend. */
+   size bytes long with the picture at its start. Elsewhere it is a file
+   descriptor, cast to a pointer (OpenGL: GL_HANDLE_TYPE_OPAQUE_FD_EXT). It
+   belongs to the backend: OpenGL keeps a descriptor it is given, so hand it a
+   dup() of this one. */
 typedef struct pt_shared_image_s
 {
 	void		*handle;

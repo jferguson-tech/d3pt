@@ -35,6 +35,10 @@ If you have questions concerning this license or the applicable additional terms
 	#define USE_LIBC_MALLOC		1
 	#pragma warning( disable : 4311 4312 4302 4306 )
 #endif
+#if defined( __linux__ ) && defined( __x86_64__ )
+	#define USE_LIBC_MALLOC		1
+	#include <malloc.h>
+#endif
 
 #ifndef USE_LIBC_MALLOC
 	#define USE_LIBC_MALLOC		0
@@ -376,6 +380,8 @@ dword idHeap::Msize( void *p ) {
 #if USE_LIBC_MALLOC
 	#ifdef _WIN32
 		return _msize( p );
+	#elif defined( __linux__ )
+		return malloc_usable_size( p );
 	#else
 		return 0;
 	#endif

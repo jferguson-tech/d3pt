@@ -61,6 +61,10 @@ public:
 
 	idEventArg()								{ type = D_EVENT_INTEGER; value = 0; };
 	idEventArg( int data )						{ type = D_EVENT_INTEGER; value = data; };
+#ifdef __GNUC__
+	// GCC's NULL is a long; as with other compilers, it is the integer 0 here
+	idEventArg( long data )						{ type = D_EVENT_INTEGER; value = data; };
+#endif
 	idEventArg( float data )					{ type = D_EVENT_FLOAT; value = *reinterpret_cast<int *>( &data ); };
 	idEventArg( idVec3 &data )					{ type = D_EVENT_VECTOR; value = reinterpret_cast<intptr_t>( &data ); };
 	idEventArg( const idStr &data )				{ type = D_EVENT_STRING; value = reinterpret_cast<intptr_t>( data.c_str() ); };

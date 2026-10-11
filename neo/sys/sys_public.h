@@ -115,6 +115,9 @@ If you have questions concerning this license or the applicable additional terms
 // Linux
 #ifdef __linux__
 
+#include <stdint.h>
+#include <alloca.h>
+
 #ifdef __i386__
 	#define	BUILD_STRING				"linux-x86"
 	#define BUILD_OS_ID					2
@@ -124,10 +127,15 @@ If you have questions concerning this license or the applicable additional terms
 	#define	BUILD_STRING				"linux-ppc"
 	#define CPUSTRING					"ppc"
 	#define CPU_EASYARGS				0
+#elif defined(__x86_64__)
+	#define	BUILD_STRING				"linux-x64"
+	#define BUILD_OS_ID					2
+	#define CPUSTRING					"x64"
+	#define CPU_EASYARGS				0
 #endif
 
 #define _alloca							alloca
-#define _alloca16( x )					((void *)((((int)alloca( (x)+15 )) + 15) & ~15))
+#define _alloca16( x )					((void *)((((intptr_t)alloca( (x)+15 )) + 15) & ~15))
 
 #define ALIGN16( x )					x
 #define PACKED							__attribute__((packed))
