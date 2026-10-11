@@ -246,11 +246,11 @@ void PT_MenuFrame( idUserInterfaceLocal *gui ) {
 		gui->SetStateInt( "pt_reset", 0 );
 		for ( int i = 0; i < ptMenuNumRows; i++ ) {
 			if ( idStr::Icmp( ptMenuRows[i].cvar, "r_pathTrace" ) && idStr::Icmp( ptMenuRows[i].cvar, "r_ptPreset" ) ) {
-				cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "reset %s\n", ptMenuRows[i].cvar ) );
+				cmdSystem->BufferCommandText( CMD_EXEC_NOW, va( "reset %s\n", ptMenuRows[i].cvar ) );
 			}
 		}
 		for ( int i = 0; i < sizeof( ptMenuAlsoReset ) / sizeof( ptMenuAlsoReset[0] ); i++ ) {
-			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "reset %s\n", ptMenuAlsoReset[i] ) );
+			cmdSystem->BufferCommandText( CMD_EXEC_NOW, va( "reset %s\n", ptMenuAlsoReset[i] ) );
 		}
 	}
 	drawWin_t *button = desktop->FindChildByName( "PathTraceBtnText" );
