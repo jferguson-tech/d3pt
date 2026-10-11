@@ -415,6 +415,12 @@ public:
 	virtual bool			DownloadRequest( const char *IP, const char *guid, const char *paks, char urls[ MAX_STRING_CHARS ] );
 
 	virtual void				GetMapLoadingGUI( char gui[ MAX_STRING_CHARS ] );
+	virtual void			SetViewBetweenTics( bool on, float fraction, float yaw, float pitch );
+
+	bool					betweenTics;			// see SetViewBetweenTics
+	float					betweenTicsFraction;
+	float					betweenTicsYaw;
+	float					betweenTicsPitch;
 
 	// ---------------------- Public idGameLocal Interface -------------------
 
