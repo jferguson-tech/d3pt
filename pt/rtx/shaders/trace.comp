@@ -401,6 +401,10 @@ void main()
 			}
 		}
 
+		// coloured glass: what is behind comes through in its colour
+		if ((surf.mat.flags & MAT_FILTER) != 0u)
+			tint *= surf.colour;
+
 		// the painted tint: covers its share of what is behind and shows lit itself
 		// where the liquid lets nothing out, froth has all that it does not mirror
 		const float cover = shut && surf.froth > 0.0 ? 1.0 : surf.mat.alpha;
