@@ -36,7 +36,7 @@ What is not, yet:
 - The player's own shadow.
 
 It has been tried in a few places on the first three maps of the campaign,
-on one card (a GeForce RTX 4090, about 70 frames a second at 800x600).
+on one card (a GeForce RTX 4090, about 70 frames a second at 1920x1080).
 Everything else is untested, the flashlight and muzzle flashes included.
 Expect places that are too bright or too dark beside the original, bumps
 that look softer than the game's, and a blur behind things that move.
@@ -48,7 +48,8 @@ All are console variables; most are saved.
 | | |
 |---|---|
 | `r_pathTrace` | 1 draws 3D views with the path tracer |
-| `r_ptScale` | resolution traced at, as a fraction of the view (0.5) |
+| `r_ptScale` | resolution traced at, as a fraction of the view (1); lower is faster and softer |
+| `r_ptAntialias` | 1 smooths edges by blending frames over time, and softens the whole picture with them (0) |
 | `r_ptSamples`, `r_ptBounces` | paths a pixel a frame (1), bounces (3) |
 | `r_ptLightScale` | how bright the game's lights are (1) |
 | `r_ptSpecular`, `r_ptGloss` | how bright and how wide a highlight is (1.5, 0.5); need `reloadPathTrace` |
