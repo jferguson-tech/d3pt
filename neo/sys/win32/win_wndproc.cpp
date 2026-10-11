@@ -488,7 +488,10 @@ LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam ) {
 			RECT	r;
 
 			if ( !win32.mouseGrabbed && win32.activeApp && GetClientRect( hWnd, &r ) && r.right > 0 && r.bottom > 0 ) {
-				const int x = idMath::ClampInt( 0, SCREEN_WIDTH, (short) LOWORD( lParam ) * SCREEN_WIDTH / r.right );
+				// (a menu is in the middle of a screen wider than 4:3)
+				const float scale = R_GuiAspectScale();
+				const float across = (float) (short) LOWORD( lParam ) * SCREEN_WIDTH / r.right;
+				const int x = idMath::ClampInt( 0, SCREEN_WIDTH, (int) ( 320.0f + ( across - 320.0f ) / scale ) );
 				const int y = idMath::ClampInt( 0, SCREEN_HEIGHT, (short) HIWORD( lParam ) * SCREEN_HEIGHT / r.bottom );
 				Sys_QueEvent( win32.sysMsgTime, SE_MOUSE_ABS, x, y, 0, NULL );
 			}
