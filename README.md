@@ -43,7 +43,13 @@ that look softer than the game's, and a blur behind things that move.
 
 ### Settings
 
-All are console variables; most are saved.
+The main ones are in the menus: Options has a Path Tracing item under
+Controls, Game Options, System and Defaults, and in a game F10 (if it is not
+bound to anything) or the `pathTraceMenu` command puts the same panel over
+the view. Its Quality row sets scale, paths, bounces and lights weighed
+together.
+
+All are console variables as well; most are saved.
 
 | | |
 |---|---|
@@ -52,15 +58,16 @@ All are console variables; most are saved.
 | `r_ptAntialias` | 1 smooths edges by blending frames over time, and softens the whole picture with them (0) |
 | `r_ptSamples`, `r_ptBounces` | paths a pixel a frame (1), bounces (3) |
 | `r_ptLightScale` | how bright the game's lights are (1) |
-| `r_ptSpecular`, `r_ptGloss` | how bright and how wide a highlight is (1.5, 0.5); need `reloadPathTrace` |
-| `r_ptMaterials` | 0 reads only a material's colour; needs `reloadPathTrace` |
+| `r_ptSpecular`, `r_ptGloss` | how bright and how wide a highlight is (1.5, 0.5) |
+| `r_ptMaterials` | 0 reads only a material's colour |
 | `r_ptExposure`, `r_ptTonemap`, `r_ptContrast`, `r_ptSaturation` | the picture |
 | `r_ptDenoise` | passes of the filter, 0 to 4 |
 | `r_ptShadowFaces` | 1 casts shadows as the game does, from the side of a surface that faces the light |
 | `r_ptEntities` | 0 traces the map alone |
 | `r_ptView` | draws the scene some other way: 4 light alone, 7 base colour, 8 normals |
 
-Commands: `reloadPathTrace` hands the map to the tracer again;
+Commands: `reloadPathTrace` hands the map to the tracer again, which
+happens by itself when a setting that needs it is changed;
 `listPathTraceLights` and `listPathTraceEntities` say what it has near you.
 
 ### How it is put together

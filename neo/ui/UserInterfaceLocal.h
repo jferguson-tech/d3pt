@@ -107,6 +107,7 @@ private:
 	idStr						returnCmd;
 	ID_TIME_T						timeStamp;
 
+	bool						pathTraceMenu;		// it is the main menu, with the path tracer's panel added
 	float						cursorX;
 	float						cursorY;
 

@@ -571,6 +571,7 @@ PATH TRACER (tr_pathtrace.cpp)
 
 bool PT_DrawView( void );
 void PT_GatherView( void );
+void PT_Settings( void );
 void PT_Shutdown( void );
 void PT_Reload_f( const idCmdArgs &args );
 void PT_ListLights_f( const idCmdArgs &args );

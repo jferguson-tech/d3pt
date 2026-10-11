@@ -425,6 +425,7 @@ set(ENGINE_SOURCES
 	neo/ui/RenderWindow.cpp
 	neo/ui/SimpleWindow.cpp
 	neo/ui/SliderWindow.cpp
+	neo/ui/PathTraceMenu.cpp
 	neo/ui/UserInterface.cpp
 	neo/ui/Window.cpp
 	neo/ui/Winvar.cpp

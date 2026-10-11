@@ -1134,6 +1134,8 @@ void idSessionLocal::DispatchCommand( idUserInterface *gui, const char *menuComm
 		HandleMsgCommands( menuCommand );
 	} else if ( gui == guiTakeNotes ) {
 		HandleNoteCommands( menuCommand );
+	} else if ( gui == guiPathTrace ) {
+		HandlePathTraceCommands( menuCommand );
 	} else if ( gui == guiRestartMenu ) {
 		HandleRestartMenuCommands( menuCommand );
 	} else if ( game && guiActive && guiActive->State().GetBool( "gameDraw" ) ) {
@@ -1519,6 +1521,17 @@ void idSessionLocal::HandleMsgCommands( const char *menuCommand ) {
 		msgRunning = false;
 		msgRetIndex = 1;
 		DispatchCommand( guiActive, msgFireBack[ 1 ].c_str() );
+	}
+}
+
+/*
+=================
+idSessionLocal::HandlePathTraceCommands
+=================
+*/
+void idSessionLocal::HandlePathTraceCommands( const char *menuCommand ) {
+	if ( !idStr::Icmp( menuCommand, "close" ) ) {
+		ExitMenu();
 	}
 }
 
