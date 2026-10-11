@@ -65,13 +65,16 @@ void main()
 		c = CostColour(diffuse.r);
 	c *= exposure;
 
-	// readings for the exposure, from pixels spread over the picture
+	// Readings for the exposure, from pixels spread over the picture: the
+	// light that falls on what is seen, with half a say for how dark it is
+	// painted. Counted by how bright, a quarter of a stop to a bin from 2^-14
+	// up: see AdaptExposure in pt_rtx.cpp. The sky is not a surface and not
+	// counted.
 	const int every = max(3, int(sqrt(float(size.x * size.y) / 60000.0)) + 1);
-	if (debug == 0 && pixel.x % every == 1 && pixel.y % every == 1)
+	if (debug == 0 && pixel.x % every == 1 && pixel.y % every == 1 && surface.a >= 0.0)
 	{
-		const float reading = clamp(log(Luminance(c) + 1.0e-4) + 16.0, 0.0, 32.0);
-		atomicAdd(meter.v[0], uint(reading * 256.0));
-		atomicAdd(meter.v[1], 1u);
+		const float stops = log2(max(Luminance(diffuse.rgb) * sqrt(max(Luminance(albedo_d), 0.01)), 1.0e-6)) + 14.0;
+		atomicAdd(meter.v[clamp(int(stops * 4.0), 0, 63)], 1u);
 	}
 
 	imageStore(img_hdr, pixel, vec4(c, 1.0));
