@@ -666,6 +666,7 @@ BeginFrame
 */
 void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	PT_Settings();
+	R_ResolutionChosen();
 	setBufferCommand_t	*cmd;
 
 	if ( !glConfig.isInitialized ) {

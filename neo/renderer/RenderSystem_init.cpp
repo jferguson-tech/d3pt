@@ -49,6 +49,7 @@ idCVar r_glDriver( "r_glDriver", "", CVAR_RENDERER, "\"opengl32\", etc." );
 idCVar r_useLightPortalFlow( "r_useLightPortalFlow", "1", CVAR_RENDERER | CVAR_BOOL, "use a more precise area reference determination" );
 idCVar r_multiSamples( "r_multiSamples", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "number of antialiasing samples" );
 idCVar r_mode( "r_mode", "3", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_INTEGER, "video mode number; -1: r_customWidth by r_customHeight; -2: the size of the desktop" );
+idCVar r_resolution( "r_resolution", "", CVAR_RENDERER, "the size of the screen as the menu sets it, \"1920 x 1080\": set, it becomes r_mode -1 with r_customWidth and r_customHeight, and the screen is set to it; it reads the size in use" );
 idCVar r_guiAspect( "r_guiAspect", "1", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_BOOL, "on a screen wider than 4:3 the menus and the HUD keep their shape, in the middle of it; 0: they are stretched to its width" );
 idCVar r_guiAspectNow( "r_guiAspectNow", "0", CVAR_RENDERER | CVAR_BOOL, "set while a menu or the HUD is drawn: what is drawn in 640 by 480 keeps its shape (see r_guiAspect)" );
 idCVar r_displayRefresh( "r_displayRefresh", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_NOCHEAT, "optional display refresh rate option for vid mode", 0.0f, 200.0f );
@@ -617,6 +618,74 @@ static bool R_GetModeInfo( int *width, int *height, int mode ) {
 
 /*
 ==================
+R_ScreenSizes
+
+The sizes the screen can be set to, smallest first, each once: what the
+menu offers. The game's own list has six, all 4:3.
+==================
+*/
+int R_ScreenSizes( int *widths, int *heights, int max ) {
+	int count = 0;
+#ifdef _WIN32
+	DEVMODE dm;
+
+	for ( int mode = 0; count < max; mode++ ) {
+		memset( &dm, 0, sizeof( dm ) );
+		dm.dmSize = sizeof( dm );
+		if ( !EnumDisplaySettings( NULL, mode, &dm ) ) {
+			break;
+		}
+		const int width = dm.dmPelsWidth, height = dm.dmPelsHeight;
+		if ( dm.dmBitsPerPel < 32 || width < 640 || height < 480 ) {
+			continue;
+		}
+		// kept in order of width, then height
+		int at = 0;
+		while ( at < count && ( widths[at] < width || ( widths[at] == width && heights[at] < height ) ) ) {
+			at++;
+		}
+		if ( at < count && widths[at] == width && heights[at] == height ) {
+			continue;
+		}
+		for ( int i = count; i > at; i-- ) {
+			widths[i] = widths[i - 1];
+			heights[i] = heights[i - 1];
+		}
+		widths[at] = width;
+		heights[at] = height;
+		count++;
+	}
+#endif
+	return count;
+}
+
+/*
+==================
+R_ResolutionChosen
+
+A size set in the menu (r_resolution) is made the mode.
+==================
+*/
+void R_ResolutionChosen( void ) {
+	int width = 0, height = 0;
+
+	if ( !r_resolution.IsModified() ) {
+		return;
+	}
+	r_resolution.ClearModified();
+	if ( sscanf( r_resolution.GetString(), "%d x %d", &width, &height ) == 2 && width >= 320 && height >= 240 ) {
+		r_mode.SetInteger( -1 );
+		r_customWidth.SetInteger( width );
+		r_customHeight.SetInteger( height );
+		if ( glConfig.isInitialized && ( width != glConfig.vidWidth || height != glConfig.vidHeight ) ) {
+			// (the menu says the next time the game is run; there is no need to wait)
+			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "vid_restart\n" );
+		}
+	}
+}
+
+/*
+==================
 R_InitOpenGL
 
 This function is responsible for initializing a valid OpenGL subsystem
@@ -638,6 +707,8 @@ void R_InitOpenGL( void ) {
 
 	common->Printf( "----- R_InitOpenGL -----\n" );
 
+	R_ResolutionChosen();
+
 	if ( glConfig.isInitialized ) {
 		common->FatalError( "R_InitOpenGL called while active" );
 	}
@@ -652,6 +723,8 @@ void R_InitOpenGL( void ) {
 	for ( i = 0 ; i < 2 ; i++ ) {
 		// set the parameters we are trying
 		R_GetModeInfo( &glConfig.vidWidth, &glConfig.vidHeight, r_mode.GetInteger() );
+		r_resolution.SetString( va( "%i x %i", glConfig.vidWidth, glConfig.vidHeight ) );
+		r_resolution.ClearModified();
 
 		parms.width = glConfig.vidWidth;
 		parms.height = glConfig.vidHeight;
@@ -1911,6 +1984,8 @@ void R_VidRestart_f( const idCmdArgs &args ) {
 
 	// this could take a while, so give them the cursor back ASAP
 	Sys_GrabMouseCursor( false );
+
+	R_ResolutionChosen();
 
 	// dump ambient caches
 	renderModelManager->FreeModelVertexCaches();
