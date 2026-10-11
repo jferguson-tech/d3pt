@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "DeviceContext.h"
 #include "Window.h"
 #include "UserInterfaceLocal.h"
+#include "PathTraceMenu.h"
 
 extern idCVar r_skipGuiShaders;		// 1 = don't render any gui elements on surfaces
 
@@ -235,6 +236,7 @@ void idUserInterfaceManagerLocal::FreeListGUI( idListGUI *listgui ) {
 
 idUserInterfaceLocal::idUserInterfaceLocal() {
 	cursorX = cursorY = 0.0;
+	pathTraceMenu = false;
 	desktop = NULL;
 	loading = false;
 	active = false;
@@ -287,12 +289,43 @@ bool idUserInterfaceLocal::InitFromFile( const char *qpath, bool rebuild, bool c
 	source = qpath;
 	state.Set( "text", "Test Text!" );
 
+	idStr written;		// (the parser reads it where it is: it is to outlive the parser)
 	idParser src( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_ALLOWMULTICHARLITERALS | LEXFL_ALLOWBACKSLASHSTRINGCONCAT );
 
 	//Load the timestamp so reload guis will work correctly
 	fileSystem->ReadFile(qpath, NULL, &timeStamp);
 
-	src.LoadFile( qpath );
+	// the path tracer's settings: a gui that is written, not read, and an
+	// addition to the end of the main menu's desktop (see PathTraceMenu.cpp)
+	pathTraceMenu = false;
+	if ( !idStr::Icmp( qpath, PT_MENU_GUI ) ) {
+		PT_MenuAlone( written );
+		pathTraceMenu = true;
+	} else if ( !idStr::Icmp( qpath, PT_MENU_MAINMENU ) ) {
+		char *text = NULL;
+		const int length = fileSystem->ReadFile( qpath, (void **) &text, NULL );
+		if ( length > 0 && text ) {
+			idStr whole;
+			whole.Append( text, length );
+			const int end = whole.Last( '}' );
+			if ( end > 0 ) {
+				idStr added;
+				PT_MenuForMainMenu( added );
+				written = whole.Left( end );
+				written += added;
+				written += whole.Right( whole.Length() - end );
+				pathTraceMenu = true;
+			}
+		}
+		if ( text ) {
+			fileSystem->FreeFile( text );
+		}
+	}
+	if ( written.Length() ) {
+		src.LoadMemory( written.c_str(), written.Length(), qpath );
+	} else {
+		src.LoadFile( qpath );
+	}
 
 	if ( src.IsLoaded() ) {
 		idToken token;
@@ -355,7 +388,13 @@ const char *idUserInterfaceLocal::HandleEvent( const sysEvent_t *event, int _tim
 	}
 
 	if ( desktop ) {
-		return desktop->HandleEvent( event, updateVisuals );
+		const char *cmd = desktop->HandleEvent( event, updateVisuals );
+		// the path tracer's panel has one command of its own, which goes no further
+		if ( pathTraceMenu && cmd && !idStr::Icmp( cmd, PT_MENU_RESET ) ) {
+			PT_MenuReset();
+			return "";
+		}
+		return cmd;
 	} 
 
 	return "";
@@ -371,6 +410,9 @@ void idUserInterfaceLocal::Redraw( int _time ) {
 	}
 	if ( !loading && desktop ) {
 		time = _time;
+		if ( pathTraceMenu ) {
+			PT_MenuFrame( this );
+		}
 		uiManagerLocal.dc.PushClipRect( uiManagerLocal.screenRect );
 		desktop->Redraw( 0, 0 );
 		uiManagerLocal.dc.PopClipRect();

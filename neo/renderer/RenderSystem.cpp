@@ -625,6 +625,7 @@ BeginFrame
 ====================
 */
 void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
+	PT_Settings();
 	setBufferCommand_t	*cmd;
 
 	if ( !glConfig.isInitialized ) {

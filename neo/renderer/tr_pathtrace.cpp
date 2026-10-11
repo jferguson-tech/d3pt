@@ -86,6 +86,7 @@ extern "C" pt_backend_t *pt_rtx_create( const pt_create_t *ci, char *err, int er
 int RB_STD_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs );
 
 idCVar r_pathTrace( "r_pathTrace", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "draw 3D views with the path tracer" );
+idCVar r_ptPreset( "r_ptPreset", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: 1 low, 2 medium, 3 high, 4 ultra: set, it sets r_ptScale, r_ptSamples, r_ptBounces and r_ptLightSamples; it reads 0 when they are none of the four" );
 idCVar r_ptScale( "r_ptScale", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: resolution traced at, as a fraction of the view" );
 idCVar r_ptSamples( "r_ptSamples", "1", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: paths per pixel per frame" );
 idCVar r_ptBounces( "r_ptBounces", "3", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: bounces after the first surface" );
@@ -1359,6 +1360,72 @@ static void PT_MovingMaterials( void ) {
 
 		PT_FillMaterial( material, read, pt.movingBase[j], pt.movingDetail[j], pt.movingShine[j], pt.moving[i].flags );
 		pt.movingMaterials.Append( material );
+	}
+}
+
+/*
+================
+PT_Settings
+
+Each frame, whether or not anything is traced: the settings that stand for
+others, and those that take effect only when the scene is handed over again.
+They are changed by sliders in a menu as well as typed, so neither is left
+to a command.
+================
+*/
+void PT_Settings( void ) {
+	static const struct { float scale; int samples, bounces, lightSamples; } presets[] = {
+		{ 0.5f, 1, 2, 4 }, { 0.75f, 1, 3, 8 }, { 1.0f, 1, 3, 8 }, { 1.0f, 2, 4, 16 },
+	};
+	static int		preset = -1;		// what r_ptPreset was left reading
+	static int		was;				// which of them the four settings were
+	static bool		known;
+	static float	last[7];
+	static int		changedAt;
+	int				i;
+
+	// which of the presets the four settings are now
+	int is = 0;
+	for ( i = 0; i < 4; i++ ) {
+		if ( idMath::Fabs( r_ptScale.GetFloat() - presets[i].scale ) < 0.01f && r_ptSamples.GetInteger() == presets[i].samples
+				&& r_ptBounces.GetInteger() == presets[i].bounces && r_ptLightSamples.GetInteger() == presets[i].lightSamples ) {
+			is = i + 1;
+			break;
+		}
+	}
+	const int asked = r_ptPreset.GetInteger();
+	if ( preset >= 0 && asked != preset ) {
+		// One was asked for. (Asked to be none of them, it reads so until the
+		// four are changed: a choice stepped through in a menu passes that way.)
+		if ( asked >= 1 && asked <= 4 ) {
+			r_ptScale.SetFloat( presets[asked - 1].scale );
+			r_ptSamples.SetInteger( presets[asked - 1].samples );
+			r_ptBounces.SetInteger( presets[asked - 1].bounces );
+			r_ptLightSamples.SetInteger( presets[asked - 1].lightSamples );
+			was = asked;
+		}
+		preset = asked;
+	} else if ( preset < 0 || is != was ) {
+		// the four were changed
+		preset = was = is;
+		if ( asked != is ) {
+			r_ptPreset.SetInteger( is );
+		}
+	}
+
+	// those the scene is made with: once one has stopped changing, it is made again
+	const float now[7] = { r_ptGlow.GetFloat(), r_ptSpecular.GetFloat(), r_ptGloss.GetFloat(), r_ptSky.GetFloat(),
+		r_ptGlassTint.GetFloat(), (float) r_ptGlass.GetBool(), (float) r_ptMaterials.GetBool() };
+	if ( !known ) {
+		known = true;
+		memcpy( last, now, sizeof( last ) );
+	} else if ( memcmp( last, now, sizeof( last ) ) ) {
+		memcpy( last, now, sizeof( last ) );
+		changedAt = Sys_Milliseconds();
+	} else if ( changedAt && Sys_Milliseconds() - changedAt > 300 ) {
+		changedAt = 0;
+		pt.world = NULL;
+		pt.forgetMoving = true;
 	}
 }
 

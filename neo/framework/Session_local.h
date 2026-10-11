@@ -242,6 +242,7 @@ public:
 	idUserInterface *	guiGameOver;
 	idUserInterface *	guiTest;
 	idUserInterface *	guiTakeNotes;
+	idUserInterface *	guiPathTrace;		// the path tracer's settings, over the running game
 	
 	idUserInterface *	guiMsg;
 	idUserInterface *	guiMsgRestore;				// store the calling GUI for restore
@@ -323,6 +324,7 @@ public:
 	void				HandleRestartMenuCommands( const char *menuCommand );
 	void				HandleMsgCommands( const char *menuCommand );
 	void				HandleNoteCommands( const char *menuCommand );
+	void				HandlePathTraceCommands( const char *menuCommand );
 	void				GetSaveGameList( idStrList &fileList, idList<fileTIME_T> &fileTimes );
 	void				TakeNotes( const char * p, bool extended = false );
 	void				UpdateMPLevelShot( void );

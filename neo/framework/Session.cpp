@@ -354,7 +354,7 @@ idSessionLocal::idSessionLocal
 idSessionLocal::idSessionLocal() {
 	guiInGame = guiMainMenu = guiIntro \
 		= guiRestartMenu = guiLoading = guiGameOver = guiActive \
-		= guiTest = guiMsg = guiMsgRestore = guiTakeNotes = NULL;	
+		= guiTest = guiMsg = guiMsgRestore = guiTakeNotes = guiPathTrace = NULL;	
 	
 	menuSoundWorld = NULL;
 	
@@ -2168,6 +2168,24 @@ bool idSessionLocal::ProcessEvent( const sysEvent_t *event ) {
 		event = &moved;
 	}
 
+	// F11, unless it is bound to something, goes between the path tracer and OpenGL
+	if ( event->evType == SE_KEY && event->evValue == K_F11 && event->evValue2 == 1 && !idKeyInput::GetBinding( K_F11 )[0] ) {
+		cvarSystem->SetCVarBool( "r_pathTrace", !cvarSystem->GetCVarBool( "r_pathTrace" ) );
+		return true;
+	}
+
+	// F10, unless it is bound to something, puts the path tracer's settings over the game and takes them away
+	if ( event->evType == SE_KEY && event->evValue == K_F10 && event->evValue2 == 1 && !idKeyInput::GetBinding( K_F10 )[0] ) {
+		if ( guiActive && guiActive == guiPathTrace ) {
+			ExitMenu();
+			return true;
+		}
+		if ( !guiActive && mapSpawned && !console->Active() ) {
+			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "pathTraceMenu\n" );
+			return true;
+		}
+	}
+
 	// hitting escape anywhere brings up the menu
 	if ( !guiActive && event->evType == SE_KEY && event->evValue2 == 1 && event->evValue == K_ESCAPE ) {
 		console->Close();
@@ -2411,7 +2429,7 @@ void idSessionLocal::Draw() {
 		}
 		
 		// draw the menus full screen
-		if ( guiActive == guiTakeNotes && !com_skipGameDraw.GetBool() ) {
+		if ( ( guiActive == guiTakeNotes || guiActive == guiPathTrace ) && !com_skipGameDraw.GetBool() ) {
 			game->Draw( GetLocalClientNum() );
 		}
 
@@ -2858,6 +2876,57 @@ void idSessionLocal::RunGameTic() {
 
 /*
 ===============
+PathTraceMenu_f
+
+The path tracer's settings over the running game, which stands still under
+them and goes on being drawn.
+===============
+*/
+static void PathTraceMenu_f( const idCmdArgs &args ) {
+	if ( !sessLocal.mapSpawned ) {
+		common->Printf( "pathTraceMenu: not in a game; in the main menu the settings are under Options\n" );
+		return;
+	}
+	if ( sessLocal.guiActive ) {
+		return;
+	}
+	sessLocal.guiPathTrace = uiManager->FindGui( "guis/pathtrace.gui", true, false, true );
+	sessLocal.SetGUI( sessLocal.guiPathTrace, NULL );
+}
+
+/*
+===============
+GuiClick_f
+===============
+*/
+static void GuiClick_f( const idCmdArgs &args ) {
+	idUserInterface *gui = sessLocal.guiActive;
+	sysEvent_t ev;
+
+	if ( args.Argc() < 3 || !gui ) {
+		common->Printf( "usage: guiClick <x> <y>, with a full screen gui up\n" );
+		return;
+	}
+	gui->SetCursor( atof( args.Argv( 1 ) ), atof( args.Argv( 2 ) ) );
+	memset( &ev, 0, sizeof( ev ) );
+	ev.evType = SE_MOUSE;
+	sessLocal.MenuEvent( &ev );
+	if ( args.Argc() > 3 ) {
+		// (only there)
+		return;
+	}
+	ev.evType = SE_KEY;
+	ev.evValue = K_MOUSE1;
+	ev.evValue2 = 1;
+	sessLocal.MenuEvent( &ev );
+	ev.evValue2 = 0;
+	if ( sessLocal.guiActive == gui ) {
+		sessLocal.MenuEvent( &ev );
+	}
+}
+
+/*
+===============
 idSessionLocal::Init
 
 Called in an orderly fashion at system startup,
@@ -2905,6 +2974,8 @@ void idSessionLocal::Init() {
 	cmdSystem->AddCommand( "loadGame", LoadGame_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "loads a game", idCmdSystem::ArgCompletion_SaveGame );
 #endif
 
+	cmdSystem->AddCommand( "pathTraceMenu", PathTraceMenu_f, CMD_FL_SYSTEM, "the path tracer's settings, over the running game; F10 if it is not bound" );
+	cmdSystem->AddCommand( "guiClick", GuiClick_f, CMD_FL_SYSTEM, "for scripted tests: click the full screen gui that is up at x y of its 640 by 480" );
 	cmdSystem->AddCommand( "takeViewNotes", TakeViewNotes_f, CMD_FL_SYSTEM, "take notes about the current map from the current view" );
 	cmdSystem->AddCommand( "takeViewNotes2", TakeViewNotes2_f, CMD_FL_SYSTEM, "extended take view notes" );
 
