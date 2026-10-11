@@ -2577,11 +2577,10 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 		float *frame_tangents = static_cast<float *>(s->frame.tangents.ptr);
 		GpuTri *tris = static_cast<GpuTri *>(s->frame.tris.ptr);
 
-		// (only with motion blur, which is what keeping them apart is for;
-		// held glass goes with the glass: it is not kept apart)
+		// (held glass goes with the glass: it is not kept apart)
 		const auto held_of = [&](uint32_t m)
 		{
-			return view->blur && num_materials && (scene->materials[m].flags & PT_MAT_HELD)
+			return num_materials && (scene->materials[m].flags & PT_MAT_HELD)
 				&& !OneSided(scene->materials[m]);
 		};
 		for (uint32_t t = 0; t < n; t++)

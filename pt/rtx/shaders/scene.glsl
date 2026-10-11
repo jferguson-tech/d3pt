@@ -52,6 +52,7 @@ const uint MAT_EMIT_BRIGHT = 64u;
 const uint MAT_EMIT_MAPPED = 4096u;
 const uint MAT_NO_SHADOW = 8192u;
 const uint MAT_REFRACT = 16384u;
+const uint MAT_MIRROR = 32768u;
 const uint MAT_WARP = 128u;
 const uint MAT_METAL_TEXTURE = 512u;
 const uint MAT_METAL_PAINTED = 1024u;
@@ -773,9 +774,10 @@ bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_th
 
 // for light finding its way about: to that a simulated liquid is the level
 // sheet the map has for it, which costs every such ray less to look for
+// (And what the eye carries is not there at all: only the eye sees it.)
 bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_through, out Hit hit, out Material mat)
 {
-	return Closest(origin, dir, tmin, camera, cross_through, MASK_ALL, false, hit, mat);
+	return Closest(origin, dir, tmin, camera, cross_through, MASK_SCENE, false, hit, mat);
 }
 
 // Ripples too fine for a simulated liquid's cells to hold, where it is as
@@ -878,7 +880,7 @@ bool Bend(vec3 p, vec3 target, out vec3 q, out float through)
 // Whether light from target reaches a point: 1, or 0 if something is in the
 // way. With bent, the way is not straight but by q, where it crosses the
 // surface of a liquid: see Bend.
-float Visible(vec3 p, vec3 target, bool bent, vec3 q)
+float Visible(vec3 p, vec3 target, bool bent, vec3 q, uint mask)
 {
 	rays_traced += bent ? 2 : 1;
 	vec3 o = p, d = (bent ? q : target) - p;
@@ -887,7 +889,7 @@ float Visible(vec3 p, vec3 target, bool bent, vec3 q)
 	{
 		Hit hit;
 		// (see pt_view_t's shadow_faces: met from behind, a triangle is one turned to the light)
-		if (!Nearest(o, d, tmin, 0.999, MASK_ALL, (fr.settings2.x & 2) != 0, hit))
+		if (!Nearest(o, d, tmin, 0.999, mask, (fr.settings2.x & 2) != 0, hit))
 		{
 			if (!bent)
 				return 1.0;
@@ -909,7 +911,7 @@ float Visible(vec3 p, vec3 target, bool bent, vec3 q)
 
 float Visible(vec3 p, vec3 target)
 {
-	return Visible(p, target, false, vec3(0.0));
+	return Visible(p, target, false, vec3(0.0), MASK_SCENE);
 }
 
 // --------------------------------------------------------------- surfaces
@@ -931,6 +933,7 @@ struct Surface
 	float	alpha;		// GGX width, roughness squared
 	bool	light_sampled_spec;
 	bool	medium;		// not a surface at all but a point in the air: no facing, scatters evenly
+	bool	held;		// of what the eye carries
 	float	froth;		// how much of a liquid's surface froth covers here; it is in colour and mat.alpha already
 	Material mat;		// after animation
 };
@@ -1064,6 +1067,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 
 	s.mat = mat;
 	s.medium = false;
+	s.held = hit.moving && fr.held.y > 0 && hit.tri >= fr.held.x;
 	s.froth = 0.0;
 	s.p = origin + dir * hit.t;
 	s.wo = -dir;
@@ -1484,6 +1488,14 @@ vec3 ClampSample(vec3 c, float max_luminance)
 }
 
 // the point a ray leaves a surface from; air has nowhere to stand off
+// What may stand between a surface and its light. What the eye carries casts
+// its shadows on itself and on nothing else: the hand shades the gun, and
+// neither puts a shadow on the room, which the player's own body does.
+uint ShadowMask(Surface s)
+{
+	return s.held ? MASK_ALL : MASK_SCENE;
+}
+
 vec3 Leave(Surface s)
 {
 	return s.medium ? s.p : s.p + s.ng * RAY_OFFSET;
@@ -1711,7 +1723,7 @@ Lit DirectLights(Surface s, bool first_hit)
 		bent = Bend(Leave(s), chosen_y, crossing, gets_in);
 
 	Lit lit = none;
-	const float clear = (chosen_free ? 1.0 : Visible(Leave(s), chosen_y, bent, crossing)) * gets_in;
+	const float clear = (chosen_free ? 1.0 : Visible(Leave(s), chosen_y, bent, crossing, ShadowMask(s))) * gets_in;
 	if (clear > 0.0)
 		lit = Reflect(s, chosen_wi, chosen_e * clear);
 	if (F_WATERS > 0)
@@ -1779,7 +1791,7 @@ Lit DirectSky(Surface s)
 // for a light that may be one that casts no shadows
 float VisibleTo(Surface s, Light l, vec3 at)
 {
-	return l.radius <= 0.0 && l.no_shadow > 0.0 ? 1.0 : Visible(Leave(s), at);
+	return l.radius <= 0.0 && l.no_shadow > 0.0 ? 1.0 : Visible(Leave(s), at, false, vec3(0.0), ShadowMask(s));
 }
 
 Lit DirectWorld(Surface s, bool first_hit)
@@ -2046,6 +2058,7 @@ vec3 DirectMedium(vec3 p)
 {
 	Surface s;
 	s.medium = true;
+	s.held = false;
 	s.froth = 0.0;
 	s.p = p;
 	s.ng = vec3(0.0, 0.0, 1.0);

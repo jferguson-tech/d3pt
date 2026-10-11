@@ -658,6 +658,7 @@ static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int 
 		material.specular_texture = 0;
 		material.roughness = 0.0f;
 		material.metallic = 1.0f;
+		material.flags |= PT_MAT_MIRROR;
 	}
 	if ( read.glows ) {
 		// not lit by the game's lights: it shows as it is painted, so it glows
