@@ -256,6 +256,8 @@ double Sys_GetClockTicks( void ) {
 						  "pop %%ebx\n"
 						  : "=r" (lo), "=r" (hi) );
 	return (double) lo + (double) 0xFFFFFFFF * hi;
+#elif defined( __x86_64__ )
+	return (double) __builtin_ia32_rdtsc();
 #else
 #error unsupported CPU
 #endif

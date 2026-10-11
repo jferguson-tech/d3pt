@@ -36,6 +36,15 @@ If you have questions concerning this license or the applicable additional terms
 #include "../openal/idal.h"
 // broken OpenAL SDK ?
 #define ID_ALCHAR (ALubyte *)
+#elif defined( __linux__ ) && !ID_OPENAL
+// Linux, built without OpenAL: the headers in the tree will do, since nothing of
+// it is called. Off Windows they leave these two types out.
+typedef struct ALCdevice_struct ALCdevice;
+typedef struct ALCcontext_struct ALCcontext;
+#include "../openal/include/al.h"
+#include "../openal/include/alc.h"
+#include "../openal/idal.h"
+#define ID_ALCHAR (ALubyte *)
 #elif defined( MACOS_X )
 #include <OpenAL/al.h>
 #include <OpenAL/alc.h>

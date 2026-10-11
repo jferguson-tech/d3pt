@@ -81,6 +81,10 @@ bends as it draws them, and all that the lights' own pictures do.
 
 #include "../../pt/include/pt.h"
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 extern "C" pt_backend_t *pt_rtx_create( const pt_create_t *ci, char *err, int errlen );
 
 int RB_STD_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs );
@@ -116,15 +120,29 @@ idCVar r_ptRefraction( "r_ptRefraction", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_A
 idCVar r_ptShowTimes( "r_ptShowTimes", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: print where the time of a frame goes, averaged over this many frames" );
 idCVar r_ptView( "r_ptView", "0", CVAR_RENDERER | CVAR_INTEGER, "path tracer: draw the scene some other way: 1 clay, 4 light alone, 7 base colour, 8 normals" );
 
-// OpenGL's side of opening the tracer's picture (GL_EXT_memory_object, GL_EXT_memory_object_win32)
+// OpenGL's side of opening the tracer's picture (GL_EXT_memory_object, and
+// GL_EXT_memory_object_win32 or, on Linux, GL_EXT_memory_object_fd)
 #define PT_GL_HANDLE_TYPE_OPAQUE_WIN32_EXT	0x9587
+#define PT_GL_HANDLE_TYPE_OPAQUE_FD_EXT		0x9586
+#define PT_GL_DEVICE_UUID_EXT				0x9597
 #define PT_GL_RGBA8							0x8058
 #define PT_GL_CLAMP_TO_EDGE					0x812F
 
 typedef void ( APIENTRY *ptCreateMemoryObjects_t )( GLsizei n, GLuint *memoryObjects );
 typedef void ( APIENTRY *ptDeleteMemoryObjects_t )( GLsizei n, const GLuint *memoryObjects );
-typedef void ( APIENTRY *ptImportMemoryWin32Handle_t )( GLuint memory, unsigned __int64 size, GLenum handleType, void *handle );
-typedef void ( APIENTRY *ptTexStorageMem2D_t )( GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLuint memory, unsigned __int64 offset );
+#ifdef _WIN32
+typedef unsigned __int64 ptGLuint64_t;
+typedef void ( APIENTRY *ptImportMemory_t )( GLuint memory, ptGLuint64_t size, GLenum handleType, void *handle );
+#define PT_GL_IMPORT_MEMORY					"glImportMemoryWin32HandleEXT"
+#define PT_GL_IMPORT_EXTENSION				"GL_EXT_memory_object_win32"
+#else
+typedef uint64_t ptGLuint64_t;
+typedef void ( APIENTRY *ptImportMemory_t )( GLuint memory, ptGLuint64_t size, GLenum handleType, GLint fd );
+typedef void ( APIENTRY *ptGetUnsignedBytei_v_t )( GLenum target, GLuint index, GLubyte *data );
+#define PT_GL_IMPORT_MEMORY					"glImportMemoryFdEXT"
+#define PT_GL_IMPORT_EXTENSION				"GL_EXT_memory_object_fd"
+#endif
+typedef void ( APIENTRY *ptTexStorageMem2D_t )( GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLuint memory, ptGLuint64_t offset );
 
 // the most lights that are handed over each frame: every one is weighed at every point lit
 const int PT_MAX_FRAME_LIGHTS = 32;
@@ -279,11 +297,11 @@ static bool PT_Start( void ) {
 	}
 
 	ptCreateMemoryObjects_t		createMemoryObjects = (ptCreateMemoryObjects_t) GLimp_ExtensionPointer( "glCreateMemoryObjectsEXT" );
-	ptImportMemoryWin32Handle_t	importMemory = (ptImportMemoryWin32Handle_t) GLimp_ExtensionPointer( "glImportMemoryWin32HandleEXT" );
+	ptImportMemory_t			importMemory = (ptImportMemory_t) GLimp_ExtensionPointer( PT_GL_IMPORT_MEMORY );
 	ptTexStorageMem2D_t			texStorageMem2D = (ptTexStorageMem2D_t) GLimp_ExtensionPointer( "glTexStorageMem2DEXT" );
 	pt.deleteMemoryObjects = (ptDeleteMemoryObjects_t) GLimp_ExtensionPointer( "glDeleteMemoryObjectsEXT" );
 	if ( !createMemoryObjects || !importMemory || !texStorageMem2D || !pt.deleteMemoryObjects ) {
-		common->Printf( "path tracer: this OpenGL driver cannot open another API's picture (GL_EXT_memory_object_win32)\n" );
+		common->Printf( "path tracer: this OpenGL driver cannot open another API's picture (" PT_GL_IMPORT_EXTENSION ")\n" );
 		pt.failed = true;
 		return false;
 	}
@@ -293,6 +311,19 @@ static bool PT_Start( void ) {
 	ci.height = glConfig.vidHeight;
 	ci.log = PT_Log;
 	ci.shared = 1;
+#ifndef _WIN32
+	// with more than one card, the tracer has to be on the one OpenGL draws with:
+	// a picture is only opened on the card that made it
+	GLubyte glCard[16];
+	ptGetUnsignedBytei_v_t getUnsignedBytei_v = (ptGetUnsignedBytei_v_t) GLimp_ExtensionPointer( "glGetUnsignedBytei_vEXT" );
+	if ( getUnsignedBytei_v ) {
+		memset( glCard, 0, sizeof( glCard ) );
+		getUnsignedBytei_v( PT_GL_DEVICE_UUID_EXT, 0, glCard );
+		if ( qglGetError() == GL_NO_ERROR ) {
+			ci.device_uuid = glCard;
+		}
+	}
+#endif
 	err[0] = '\0';
 	pt.backend = pt_rtx_create( &ci, err, sizeof( err ) );
 	if ( !pt.backend ) {
@@ -310,7 +341,12 @@ static bool PT_Start( void ) {
 	pt.height = shared.height;
 
 	createMemoryObjects( 1, &pt.glMemory );
+#ifdef _WIN32
 	importMemory( pt.glMemory, shared.size, PT_GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, shared.handle );
+#else
+	// OpenGL keeps the descriptor it is given: it gets one of its own
+	importMemory( pt.glMemory, shared.size, PT_GL_HANDLE_TYPE_OPAQUE_FD_EXT, dup( (int)(intptr_t)shared.handle ) );
+#endif
 
 	globalImages->BindNull();
 	qglGenTextures( 1, &pt.glTexture );

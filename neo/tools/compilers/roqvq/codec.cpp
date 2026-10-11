@@ -30,6 +30,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "codec.h"
 
+#ifndef HUGE
+#define HUGE HUGE_VAL		// the C library of Linux has no HUGE
+#endif
+
 float glimit( const float val ) {
 	if (val<0) return 0;
 	if (val>255) return 255;

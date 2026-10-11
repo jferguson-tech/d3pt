@@ -187,12 +187,14 @@ bool idAudioHardwareOSS::Initialize( ) {
 	// may only be available starting with OSS API v4.0
 	// http://www.fi.opensound.com/developer/SNDCTL_SYSINFO.html
 	// NOTE: at OSS API 4.0 headers, replace OSS_SYSINFO with SNDCTL_SYSINFO
+#ifdef OSS_SYSINFO		// the kernel's own soundcard.h has none
 	oss_sysinfo si;
 	if ( ioctl( m_audio_fd, OSS_SYSINFO, &si ) == -1 ) {
 		common->Printf( "ioctl SNDCTL_SYSINFO failed: %s\nthis ioctl is only available in OSS/Linux implementation. If you run OSS/Free, don't bother.", strerror( errno ) );
 	} else {
 		common->Printf( "%s: %s %s\n", s_device.GetString(), si.product, si.version );
 	}
+#endif
 
 	if ( ioctl( m_audio_fd, SNDCTL_DSP_GETCAPS, &caps ) == -1 ) {
 		common->Warning( "ioctl SNDCTL_DSP_GETCAPS failed - driver too old?" );
@@ -279,7 +281,7 @@ bool idAudioHardwareOSS::Initialize( ) {
 	}
 	// instead of an exact match, do a very close to
 	// there is some horrible Ensonic ES1371 which replies 44101 for a 44100 request
-	if ( abs( m_speed - PRIMARYFREQ ) > 5 ) {
+	if ( abs( (int)m_speed - PRIMARYFREQ ) > 5 ) {
 		common->Warning( "ioctl SNDCTL_DSP_SPEED failed to get the requested frequency %d, got %d", PRIMARYFREQ, m_speed );
 		InitFailed();
 		return false;
@@ -387,6 +389,14 @@ void idAudioHardwareOSS::Write( bool flushing ) {
 	}
 	m_writeChunks -= Min( m_writeChunks, m_freeWriteChunks );
 }
+
+#if !ID_OPENAL
+// The function pointers idal.h declares, as win_snd.cpp has them. Nothing
+// fills them in or calls them in a build without OpenAL.
+typedef void *HMODULE;
+static void *GetProcAddress( HMODULE, const char * ) { return NULL; }
+#include "../../openal/idal.cpp"
+#endif
 
 /*
  ===============
