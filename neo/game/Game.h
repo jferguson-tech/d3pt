@@ -190,6 +190,13 @@ public:
 	virtual bool				DownloadRequest( const char *IP, const char *guid, const char *paks, char urls[ MAX_STRING_CHARS ] ) = 0;
 
 	virtual void				GetMapLoadingGUI( char gui[ MAX_STRING_CHARS ] ) = 0;
+
+	// For a frame drawn between two of the game's 60 a second: how far the time
+	// drawn is from the tic before last to the last, 0 to 1, and how far the
+	// player has turned the view since the last, in degrees. The next Draw
+	// shows the player's own view so: where the eye was at that time, turned as
+	// it is now. Nothing of the game itself is changed. See com_maxFPS.
+	virtual void				SetViewBetweenTics( bool on, float fraction, float yaw, float pitch ) = 0;
 };
 
 extern idGame *					game;

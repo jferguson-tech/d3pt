@@ -452,6 +452,14 @@ public:
 
 	renderView_t *			GetRenderView( void );
 	void					CalculateRenderView( void );	// called every tic by player code
+
+	// a frame drawn between two tics: see idGame::SetViewBetweenTics
+	bool					BeginViewBetweenTics( float fraction, float yaw, float pitch );
+	void					EndViewBetweenTics( void );
+	renderView_t			ticView;				// the view as the tic left it, while one between tics is drawn
+	idVec3					ticEyeBefore;			// where the eye was a tic ago
+	idVec3					ticEyeNow;				// and after the last
+	int						ticEyeFrame;
 	void					CalculateFirstPersonView( void );
 
 	void					DrawHUD( idUserInterface *hud );

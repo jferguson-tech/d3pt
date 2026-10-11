@@ -242,6 +242,11 @@ public:
 	idUserInterface *	guiGameOver;
 	idUserInterface *	guiTest;
 	idUserInterface *	guiTakeNotes;
+	bool				freeFrames;				// frames are not held to the game's tics: see com_maxFPS
+	usercmd_t			lastTicCmd;				// what the last tic of the game was run with
+	double				lastTicClock;			// when the last tic latched was, in Sys_GetClockTicks
+	double				nextFrameClock;			// when the next frame is due
+	static idCVar		com_maxFPS;
 	idUserInterface *	guiPathTrace;		// the path tracer's settings, over the running game
 	
 	idUserInterface *	guiMsg;
