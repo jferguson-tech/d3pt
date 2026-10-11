@@ -17,10 +17,11 @@ What is traced:
 
 - The map, and every model in it: monsters and other animated models, the
   weapon in hand, doors, lifts and whatever else moves.
-- The game's lights, each as the box or cone the game fills with light, in
+- The game's lights, each as the box or pyramid the game fills with light, in
   the colour it has that frame: lights that flicker, fade, are switched on or
   move, and `testLight`. Lights the game casts no shadows from cast none
-  here.
+  here. A pyramid's light is shaped by the picture the game shines through
+  it, as the flashlight's is: a bright middle with a soft edge.
 - Light that has bounced. This is the difference from the game's own
   picture: a room is lit by its walls as well as its lamps, and shadows are
   not black.
@@ -32,7 +33,9 @@ What is not, yet:
 - Particles, glass and everything else see-through, decals, flares, and the
   screens of in-game computers, which are plain white.
 - The sky, which is white through a window. Fog. Mirrors and cameras.
-- The pictures the game's lights project: a light is an even box or cone.
+- The pictures the game lights a box through: such a light is an even box.
+  A pyramid's picture stands still where the game slides or turns it, and
+  the pyramid is lit from the light on, not from where the game starts it.
 - The player's own shadow.
 
 It has been tried in a few places on the first three maps of the campaign,
