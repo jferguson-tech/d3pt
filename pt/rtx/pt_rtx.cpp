@@ -369,7 +369,8 @@ struct RtxBackend
 	// into memory of the host's, every sum was a trip to it and back: 4 ms of
 	// a 47 ms frame on an RTX 4060 Laptop.)
 	Buffer					meter, meter_read;
-	uint32_t				meter_was[2] = {};		// what they stood at when last read
+	uint32_t				meter_was[64] = {};		// what they stood at when last read
+	float					metered = 0.0f;			// the light the exposure last went by
 	int						num_world_lights = 0;
 	std::vector<int>		light_given;		// for each light load_world was given, its place in world_lights or -1
 	std::vector<float>		light_base;			// 3 per world light: its emission as given
@@ -1941,11 +1942,11 @@ void CreateScene(RtxBackend *s)
 	s->frame_lights = MakeBuffer(s, 64 * sizeof(GpuLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
 	s->tables = MakeBuffer(s, kNumStyles * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
 	s->indices = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-	s->meter = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+	s->meter = MakeBuffer(s, 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
 		| VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
-	s->meter_read = MakeBuffer(s, 64, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, true);
-	memset(s->meter_read.ptr, 0, 64);
-	s->meter_was[0] = s->meter_was[1] = 0;
+	s->meter_read = MakeBuffer(s, 256, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, true);
+	memset(s->meter_read.ptr, 0, 256);
+	memset(s->meter_was, 0, sizeof(s->meter_was));
 	{
 		VkCommandBuffer cmd = BeginOnce(s);
 		vkCmdFillBuffer(cmd, s->meter.buffer, 0, VK_WHOLE_SIZE, 0);
@@ -2388,29 +2389,66 @@ uint32_t HashBytes(const void *data, size_t bytes, uint32_t h)
 	return (uint32_t)(all ^ (all >> 32));
 }
 
-const float kTypicalTarget = 0.0054f;	// the brightness the exposure aims the typical pixel at
+// The eye adapts. What it goes by is a reading of how bright what is seen
+// is, counted on the last frame's picture (see compose.comp):
+//
+// - the light that falls there, with half a say for how dark the surface is
+//   painted: going by the picture alone, a room of dark metal in good light
+//   was taken for a dim one and shown as bright as a white room;
+// - the middle of the count, without its darkest and its brightest parts: a
+//   black doorway, a lamp or a screen does not move it;
+// - a little of the way only: a place a sixteenth as bright as most is shown
+//   a little over twice as bright, not sixteen times. A dark place is to stay
+//   dark, as the game drew it, which did not adapt at all;
+// - within two stops either way;
+// - quickly into the light and slowly into the dark, as an eye does.
+//
+// The numbers are from ten places in seven of the game's maps, set so that
+// on the whole the picture is as bright as the game's own renderer draws
+// them, and comes as near it in each as one rule can: within a stop.
+const int kMeterBins = 64;				// a quarter of a stop each, from 2^-14
+const float kLightTypical = 0.043f;		// the reading in a place lit as most are,
+const float kExposureTypical = 0.40f;	// and the exposure it is shown at
+const float kMeterFrom = 0.30f, kMeterTo = 0.90f;	// the part of the count that is gone by
+const float kCorrection = 0.3f;			// how much of the difference is made up, in stops
+const float kExposureMin = 0.25f * kExposureTypical, kExposureMax = 4.0f * kExposureTypical;
+const float kRateDown = 3.0f, kRateUp = 0.4f;		// per second: into the light, into the dark
 
-// The eye adapts: measured on the last frame's picture, and followed over
-// about a second so that it does not pump.
 void AdaptExposure(RtxBackend *s, const pt_view_t *view)
 {
-	// what the views traced since the last look added to the sums
+	// what the views traced since the last look added to the counts
 	const uint32_t *meter = static_cast<const uint32_t *>(s->meter_read.ptr);
-	const uint32_t sum = meter[0] - s->meter_was[0], count = meter[1] - s->meter_was[1];
-	s->meter_was[0] = meter[0];
-	s->meter_was[1] = meter[1];
-	if (!count || s->exposure_used <= 0.0f)
-		return;
+	uint32_t bins[kMeterBins];
+	uint32_t total = 0;
+	for (int i = 0; i < kMeterBins; i++)
+	{
+		bins[i] = meter[i] - s->meter_was[i];
+		s->meter_was[i] = meter[i];
+		total += bins[i];
+	}
+	if (total < 64)
+		return;		// nearly all sky, or nothing drawn
 
-	const float typical = std::exp((float)sum / (256.0f * count) - 16.0f) / s->exposure_used;
-	if (typical <= 0.0f)
-		return;
-	const float want = std::min(16.0f, std::max(0.125f, kTypicalTarget / typical));
+	// the mean, in stops, of the readings between the two marks
+	const double from = (double)total * kMeterFrom, to = (double)total * kMeterTo;
+	double before = 0.0, sum = 0.0;
+	for (int i = 0; i < kMeterBins; i++)
+	{
+		const double after = before + bins[i];
+		const double part = std::min(after, to) - std::max(before, from);
+		if (part > 0.0)
+			sum += part * ((i + 0.5) * 0.25 - 14.0);
+		before = after;
+	}
+	const float typical = std::exp2((float)(sum / (to - from)));
+	s->metered = typical;
+
+	const float want = std::min(kExposureMax, std::max(kExposureMin, kExposureTypical * std::pow(kLightTypical / typical, kCorrection)));
 	const float dt = view->time - s->prev_time;
 	if (!s->have_exposure || dt < 0.0f || dt > 1.0f)
 		s->auto_exposure = want;
 	else
-		s->auto_exposure += (want - s->auto_exposure) * (1.0f - std::exp(-dt * 2.5f));
+		s->auto_exposure += (want - s->auto_exposure) * (1.0f - std::exp(-dt * (want < s->auto_exposure ? kRateDown : kRateUp)));
 	s->have_exposure = true;
 }
 
@@ -2919,10 +2957,10 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	if (s->stages_known)
 		snprintf(times, sizeof(times), "|scene %.1f build %.1f trace %.1f history %.1f filter %.1f out %.1f",
 			s->stage_ms[0], s->stage_ms[1], s->stage_ms[2], s->stage_ms[3], s->stage_ms[4], s->stage_ms[5]);
-	snprintf(s->stats, sizeof(s->stats), "%dx%d to %dx%d %dspp %db%s|%u + %u triangles, %d + %u lights|exp %.2f%s",
+	snprintf(s->stats, sizeof(s->stats), "%dx%d to %dx%d %dspp %db%s|%u + %u triangles, %d + %u lights|exp %.2f light %.4f%s",
 		rw, rh, s->out_width, s->out_height, paths, bounces, times,
 		s->world.num_solid + s->world.num_glass, n, s->num_world_lights, num_lights,
-		s->exposure_used, still ? " still" : "");
+		s->exposure_used, s->metered, still ? " still" : "");
 	s->scene_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - began).count();
 	Lap(s, "view");
 }
@@ -3085,7 +3123,7 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	{
 		const VkAccessFlags2 copied = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
 		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, copied);
-		const VkBufferCopy sums{0, 0, 2 * sizeof(uint32_t)};
+		const VkBufferCopy sums{0, 0, 64 * sizeof(uint32_t)};
 		vkCmdCopyBuffer(cmd, s->meter.buffer, s->meter_read.buffer, 1, &sums);
 		Between(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, copied, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 	}

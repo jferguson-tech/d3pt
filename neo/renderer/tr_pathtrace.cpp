@@ -91,7 +91,7 @@ idCVar r_ptScale( "r_ptScale", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "
 idCVar r_ptSamples( "r_ptSamples", "1", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: paths per pixel per frame" );
 idCVar r_ptBounces( "r_ptBounces", "3", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: bounces after the first surface" );
 idCVar r_ptExposure( "r_ptExposure", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: exposure" );
-idCVar r_ptAutoExposure( "r_ptAutoExposure", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: adapt the exposure to the scene" );
+idCVar r_ptAutoExposure( "r_ptAutoExposure", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: adapt the exposure to the light on what is seen, part of the way and within two stops, quickly into the light and slowly into the dark; r_ptExposure then multiplies what it comes to" );
 idCVar r_ptLightScale( "r_ptLightScale", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright a light is for its colour and size" );
 idCVar r_ptDenoise( "r_ptDenoise", "4", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: passes of the spatial filter, 0-4" );
 idCVar r_ptEntities( "r_ptEntities", "1", CVAR_RENDERER | CVAR_BOOL, "path tracer: trace the models of entities: monsters, doors, the weapon and all else that is not the map itself" );
@@ -1534,7 +1534,10 @@ static void PT_ShowTimes( double sendMs ) {
 		line += va( ", %s %.2f", stages[i].name, stageMs[i] / stageFrames );
 		card += stageMs[i] / stageFrames;
 	}
-	common->Printf( "%s, card %.2f; %d triangles moving\n", line.c_str(), card, pt.triMaterials.Num() );
+	// (and the exposure, with the light it went by)
+	const char *stats = pt.backend->stats ? pt.backend->stats( pt.backend ) : "";
+	const char *exposure = strstr( stats, "exp " );
+	common->Printf( "%s, card %.2f; %d triangles moving; %s\n", line.c_str(), card, pt.triMaterials.Num(), exposure ? exposure : "" );
 	if ( fineNum ) {
 		line = "pt parts:";
 		for ( int i = 0; i < fineNum; i++ ) {

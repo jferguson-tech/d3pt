@@ -74,6 +74,7 @@ static const ptMenuRow_t ptMenuRows[] = {
 	{ "Lights Weighed",			"r_ptLightSamples",	NULL,	1.0f,	32.0f,	1.0f },
 	{ "Noise Filter",			"r_ptDenoise",		NULL,	0.0f,	4.0f,	1.0f },
 	{ "Exposure",				"r_ptExposure",		NULL,	0.25f,	4.0f,	0.05f },
+	{ "Auto Exposure",			"r_ptAutoExposure",	"Off;On" },
 	{ "Light Brightness",		"r_ptLightScale",	NULL,	0.25f,	4.0f,	0.05f },
 	{ "Specular",				"r_ptSpecular",		NULL,	0.0f,	4.0f,	0.1f },
 	{ "Roughness",				"r_ptGloss",		NULL,	0.05f,	1.0f,	0.05f },
@@ -87,7 +88,7 @@ static const int ptMenuNumRows = sizeof( ptMenuRows ) / sizeof( ptMenuRows[0] );
 // What Reset to Defaults puts back besides the rows: the rest of the path
 // tracer's settings. Whether it is on is left as it is.
 static const char *ptMenuAlsoReset[] = {
-	"r_ptAutoExposure", "r_ptFireflyClamp", "r_ptGlow", "r_ptShadowFaces", "r_ptMaterials", "r_ptFilter", "r_ptHistory",
+	"r_ptFireflyClamp", "r_ptGlow", "r_ptShadowFaces", "r_ptMaterials", "r_ptFilter", "r_ptHistory",
 	"r_ptTonemap", "r_ptContrast", "r_ptSaturation", "r_ptGlassTint", "r_ptEntities", "r_ptView",
 };
 
@@ -123,7 +124,7 @@ static void PT_MenuPanel( idStr &s, bool visible, bool closeButton ) {
 	for ( int i = 0; i < ptMenuNumRows; i++ ) {
 		const ptMenuRow_t &row = ptMenuRows[i];
 
-		s += va( "	windowDef PT%d {\n		rect 20, %d, 350, 16\n", i, 30 + i * 19 );
+		s += va( "	windowDef PT%d {\n		rect 20, %d, 350, 16\n", i, 30 + i * 18 );
 		s += va( "		windowDef PT%dL { rect 0, 0, 8, 16\n background \"gui/mainmenu/select_edge\"\n matcolor 0, 0, 0, 1\n noevents 1\n }\n", i );
 		s += va( "		windowDef PT%dM { rect 8, 0, 334, 16\n background \"gui/mainmenu/select_border\"\n matcolor 0, 0, 0, 1\n noevents 1\n }\n", i );
 		s += va( "		windowDef PT%dR { rect 342, 0, 8, 16\n background \"gui/mainmenu/select_angle\"\n matcolor 0, 0, 0, 1\n noevents 1\n }\n", i );
@@ -142,7 +143,7 @@ static void PT_MenuPanel( idStr &s, bool visible, bool closeButton ) {
 	}
 
 	s += "	windowDef PTNote {\n"
-		"		rect 20, 329, 350, 14\n"
+		"		rect 20, 335, 350, 14\n"
 		"		text \"Changes are kept. Quality sets the four rows under it.\"\n"
 		"		font \"fonts/bank\"\n"
 		"		textscale 0.2\n"

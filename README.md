@@ -61,6 +61,7 @@ All are console variables as well; most are saved.
 | `r_ptSpecular`, `r_ptGloss` | how bright and how wide a highlight is (1.5, 0.5) |
 | `r_ptMaterials` | 0 reads only a material's colour |
 | `r_ptExposure`, `r_ptTonemap`, `r_ptContrast`, `r_ptSaturation` | the picture |
+| `r_ptAutoExposure` | 1 adapts the exposure to how bright what is seen is: a little of the way, quickly into the light and slowly into the dark; `r_ptExposure` then multiplies what it comes to (0) |
 | `r_ptDenoise` | passes of the filter, 0 to 4 |
 | `r_ptShadowFaces` | 1 casts shadows as the game does, from the side of a surface that faces the light |
 | `r_ptEntities` | 0 traces the map alone |

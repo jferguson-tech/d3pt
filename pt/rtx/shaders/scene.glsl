@@ -222,7 +222,7 @@ layout(set = 0, binding = 21, rgba16f) uniform image2D img_extra;		// light that
 layout(set = 0, binding = 22, rgba16f) uniform image2D img_kept[6];		// the three gathered over time; a: frames
 layout(set = 0, binding = 23, rgba16f) uniform image2D img_filter[6];	// the three being filtered
 layout(set = 0, binding = 24, rgba8) uniform image2D img_picture;
-layout(std430, set = 0, binding = 25) buffer Meter { uint v[]; } meter;	// sums for the exposure
+layout(std430, set = 0, binding = 25) buffer Meter { uint v[]; } meter;	// counts for the exposure: see compose.comp
 layout(set = 0, binding = 26, rgba16f) uniform image2D img_hdr;			// the picture put together, exposed, before grading
 layout(set = 0, binding = 27, rgba16f) uniform image2D img_bloom[2];	// its glow, at half size in the corner of each
 // these two are the size of the view, which may be larger than what is traced
