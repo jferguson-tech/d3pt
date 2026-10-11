@@ -300,6 +300,7 @@ bool idUserInterfaceLocal::InitFromFile( const char *qpath, bool rebuild, bool c
 	pathTraceMenu = false;
 	if ( !idStr::Icmp( qpath, PT_MENU_GUI ) ) {
 		PT_MenuAlone( written );
+		pathTraceMenu = true;
 	} else if ( !idStr::Icmp( qpath, PT_MENU_MAINMENU ) ) {
 		char *text = NULL;
 		const int length = fileSystem->ReadFile( qpath, (void **) &text, NULL );

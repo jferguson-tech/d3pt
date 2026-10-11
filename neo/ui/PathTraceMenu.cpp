@@ -84,6 +84,13 @@ static const ptMenuRow_t ptMenuRows[] = {
 };
 static const int ptMenuNumRows = sizeof( ptMenuRows ) / sizeof( ptMenuRows[0] );
 
+// What Reset to Defaults puts back besides the rows: the rest of the path
+// tracer's settings. Whether it is on is left as it is.
+static const char *ptMenuAlsoReset[] = {
+	"r_ptAutoExposure", "r_ptFireflyClamp", "r_ptGlow", "r_ptShadowFaces", "r_ptMaterials", "r_ptFilter", "r_ptHistory",
+	"r_ptTonemap", "r_ptContrast", "r_ptSaturation", "r_ptGlassTint", "r_ptEntities", "r_ptView",
+};
+
 /*
 ================
 PT_MenuPanel
@@ -143,9 +150,19 @@ static void PT_MenuPanel( idStr &s, bool visible, bool closeButton ) {
 		"		forecolor 0.6, 0.8, 0.8, 1\n"
 		"		noevents 1\n"
 		"	}\n";
+	s += va( "	windowDef PTReset {\n		rect %d, 351, 170, 16\n", closeButton ? 30 : 110 );
+	s += "		text \"RESET TO DEFAULTS\"\n"
+		"		textscale 0.26\n"
+		"		textalign 1\n"
+		"		textaligny -3\n"
+		"		forecolor 0.6, 1, 1, 1\n"
+		"		onMouseEnter { transition \"forecolor\" \"0.6 1 1 1\" \"1 1 1 1\" \"250\" ; }\n"
+		"		onMouseExit { transition \"forecolor\" \"1 1 1 1\" \"0.6 1 1 1\" \"250\" ; }\n"
+		"		onAction { set \"gui::pt_reset\" \"1\" ; }\n"
+		"	}\n";
 	if ( closeButton ) {
 		s += "	windowDef PTClose {\n"
-			"		rect 135, 351, 120, 16\n"
+			"		rect 230, 351, 120, 16\n"
 			"		text \"CLOSE\"\n"
 			"		textscale 0.26\n"
 			"		textalign 1\n"
@@ -210,7 +227,7 @@ void PT_MenuAlone( idStr &s ) {
 ================
 PT_MenuFrame
 
-Each frame the main menu is drawn: the button is there when the menu's own
+Each frame a gui with the panel is drawn. In the main menu the button is there when the menu's own
 options buttons are, and the panel is open from a click on the button until
 another, or until the menu moves on to another of its panels or away.
 ================
@@ -222,6 +239,19 @@ void PT_MenuFrame( idUserInterfaceLocal *gui ) {
 	idWindow *desktop = gui->GetDesktop();
 	if ( !desktop ) {
 		return;
+	}
+
+	// Reset to Defaults, in the main menu and on its own
+	if ( gui->State().GetInt( "pt_reset" ) ) {
+		gui->SetStateInt( "pt_reset", 0 );
+		for ( int i = 0; i < ptMenuNumRows; i++ ) {
+			if ( idStr::Icmp( ptMenuRows[i].cvar, "r_pathTrace" ) && idStr::Icmp( ptMenuRows[i].cvar, "r_ptPreset" ) ) {
+				cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "reset %s\n", ptMenuRows[i].cvar ) );
+			}
+		}
+		for ( int i = 0; i < sizeof( ptMenuAlsoReset ) / sizeof( ptMenuAlsoReset[0] ); i++ ) {
+			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "reset %s\n", ptMenuAlsoReset[i] ) );
+		}
 	}
 	drawWin_t *button = desktop->FindChildByName( "PathTraceBtnText" );
 	drawWin_t *panel = desktop->FindChildByName( "OptionsPathTrace" );
