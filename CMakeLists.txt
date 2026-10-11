@@ -54,6 +54,7 @@ add_compile_definitions(
 	ID_NO_TOOLS				# the editors need MFC
 	ID_OPENAL=0				# the OpenAL and EAX libraries that came with the source are 32-bit
 	ID_ENABLE_CURL=0
+	ID_ENFORCE_KEY=0		# a game starts without the doomkey and xpkey files
 )
 
 add_library(idlib STATIC ${IDLIB_SOURCES})
