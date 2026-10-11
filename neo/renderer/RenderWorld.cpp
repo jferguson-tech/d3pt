@@ -200,6 +200,301 @@ Does not write to the demo file, which will only be updated for
 visible entities
 ==============
 */
+/*
+===============================================================================
+
+Between tics
+
+The game moves things 60 times a second. A frame drawn between two of its
+tics (com_maxFPS) draws what moved in the last tic part of the way from where
+it was to where the game put it, so a door, a lift or a monster crossing the
+room moves every frame, a tic behind the game. The player's view is a tic
+behind in the same way (idGame::SetViewBetweenTics), so the two agree.
+
+A model with joints is also posed on its way from the pose it had a tic ago
+to the one the game last gave it (R_TicPose). What is carried with the view (the weapon in the hand) is
+left alone, the game having placed it. Something that went too far in a tic
+to have travelled there is put there at once.
+
+Once the next tic has come and a thing has not moved again, it is drawn
+where the game put it and is done with.
+
+The view of a camera, which the game does not place between tics as it does
+the player's, is drawn on its way in the same manner: R_ViewBetweenTics.
+
+===============================================================================
+*/
+
+idCVar r_ticViewSet( "r_ticViewSet", "0", CVAR_RENDERER | CVAR_BOOL, "set by the game while it draws a view it has itself placed between two of its tics" );
+idCVar r_lerpWorld( "r_lerpWorld", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "between two tics of the game, what moved is drawn on its way: doors, lifts, monsters, lights; 0: it steps 60 times a second" );
+
+idCVar r_showTicMoves( "r_showTicMoves", "0", CVAR_RENDERER | CVAR_INTEGER, "print, each frame, how many things are drawn between two tics and where the first of them is; 2: the first that is not a posed model" );
+
+static int		rw_gameTic;				// the tic of the game being run, or last run
+static bool		rw_betweenTics;			// this frame is drawn between tics
+static float	rw_ticFraction;
+static int		rw_posed;				// models posed between tics this frame
+static bool		rw_placing;				// an update is ours, not the game's
+
+static renderView_t	rw_ticViewFrom, rw_ticViewTo;
+static int			rw_ticViewTic = -1;
+
+const float TIC_FAR = 64.0f;			// further than this in a tic is not travel
+
+void R_SetGameTic( int tic ) {
+	rw_gameTic = tic;
+}
+
+void R_SetBetweenTics( bool on, float fraction ) {
+	rw_betweenTics = on && r_lerpWorld.GetBool();
+	rw_ticFraction = idMath::ClampFloat( 0.0f, 1.0f, fraction );
+}
+
+/*
+===================
+R_TicBetween
+
+Part of the way from one place and turn to another.
+===================
+*/
+static bool R_TicIsTurn( const idMat3 &m ) {
+	return idMath::Fabs( m[0] * m[0] - 1.0f ) < 0.01f && idMath::Fabs( m[1] * m[1] - 1.0f ) < 0.01f && idMath::Fabs( m[2] * m[2] - 1.0f ) < 0.01f
+		&& idMath::Fabs( m[0] * m[1] ) < 0.01f && idMath::Fabs( m[0] * m[2] ) < 0.01f && idMath::Fabs( m[1] * m[2] ) < 0.01f;
+}
+
+static void R_TicBetween( const idVec3 &fromOrigin, const idMat3 &fromAxis, const idVec3 &toOrigin, const idMat3 &toAxis, float fraction, idVec3 &origin, idMat3 &axis ) {
+	origin = fromOrigin + fraction * ( toOrigin - fromOrigin );
+	if ( fromAxis == toAxis ) {
+		axis = toAxis;
+	} else if ( R_TicIsTurn( fromAxis ) && R_TicIsTurn( toAxis ) ) {
+		idQuat q;
+		q.Slerp( fromAxis.ToQuat(), toAxis.ToQuat(), fraction );
+		axis = q.ToMat3();
+	} else {
+		// scaled or skewed: near enough over a tic
+		axis = fromAxis + fraction * ( toAxis - fromAxis );
+	}
+}
+
+/*
+===================
+R_TicNoted
+
+The game has put something somewhere: note where it was and where it is to
+be. Returns whether it is to be drawn on its way.
+===================
+*/
+template< class type >
+static void R_TicNoted( type *def, bool isNew, const idVec3 &origin, const idMat3 &axis, bool carried ) {
+	if ( isNew ) {
+		def->ticFromOrigin = origin;
+		def->ticFromAxis = axis;
+	} else if ( def->ticMoved != rw_gameTic ) {
+		def->ticFromOrigin = def->ticToOrigin;
+		def->ticFromAxis = def->ticToAxis;
+	}
+	def->ticMoved = rw_gameTic;
+	def->ticToOrigin = origin;
+	def->ticToAxis = axis;
+	def->ticPending = !carried && ( def->ticFromOrigin != origin || def->ticFromAxis != axis );
+	if ( ( origin - def->ticFromOrigin ).LengthSqr() > Square( TIC_FAR ) ) {
+		def->ticFromOrigin = origin;
+		def->ticFromAxis = axis;
+		// (still pending if it was drawn part way: it is to be drawn where it is)
+	}
+}
+
+/*
+===================
+idRenderWorldLocal::PlaceBetweenTics
+
+Before a view of the world is drawn: everything still on its way is put
+where it is at the time drawn.
+===================
+*/
+void idRenderWorldLocal::PlaceBetweenTics( void ) {
+	int i;
+	int count = 0, shown = -1;
+
+	rw_placing = true;
+	for ( i = 0; i < entityDefs.Num(); i++ ) {
+		idRenderEntityLocal *def = entityDefs[i];
+		if ( !def || !def->ticPending ) {
+			continue;
+		}
+		count++;
+		if ( shown < 0 && ( r_showTicMoves.GetInteger() != 2 || !def->parms.joints ) ) {
+			shown = i;
+		}
+		float fraction = 1.0f;
+		if ( rw_betweenTics && def->ticMoved == rw_gameTic ) {
+			fraction = rw_ticFraction;
+		} else {
+			def->ticPending = false;
+		}
+		renderEntity_t placed = def->parms;
+		R_TicBetween( def->ticFromOrigin, def->ticFromAxis, def->ticToOrigin, def->ticToAxis, fraction, placed.origin, placed.axis );
+		if ( placed.origin != def->parms.origin || placed.axis != def->parms.axis ) {
+			UpdateEntityDef( i, &placed );
+		}
+	}
+	for ( i = 0; i < lightDefs.Num(); i++ ) {
+		idRenderLightLocal *def = lightDefs[i];
+		if ( !def || !def->ticPending ) {
+			continue;
+		}
+		float fraction = 1.0f;
+		if ( rw_betweenTics && def->ticMoved == rw_gameTic ) {
+			fraction = rw_ticFraction;
+		} else {
+			def->ticPending = false;
+		}
+		renderLight_t placed = def->parms;
+		R_TicBetween( def->ticFromOrigin, def->ticFromAxis, def->ticToOrigin, def->ticToAxis, fraction, placed.origin, placed.axis );
+		if ( placed.origin != def->parms.origin || placed.axis != def->parms.axis ) {
+			UpdateLightDef( i, &placed );
+		}
+	}
+	rw_placing = false;
+
+	if ( r_showTicMoves.GetInteger() && ( count || rw_posed ) ) {
+		if ( shown >= 0 && entityDefs[shown] ) {
+			common->Printf( "tic %i %.2f: %i moving, %i posed, entity %i at %s\n", rw_gameTic, rw_betweenTics ? rw_ticFraction : 1.0f, count, rw_posed, shown, entityDefs[shown]->parms.origin.ToString( 2 ) );
+		} else {
+			common->Printf( "tic %i %.2f: %i moving, %i posed\n", rw_gameTic, rw_betweenTics ? rw_ticFraction : 1.0f, count, rw_posed );
+		}
+	}
+	rw_posed = 0;		// (those of the frame before)
+}
+
+/*
+===================
+R_TicPose
+
+The joints to pose a model with for this frame, or NULL for those the game
+gave. The game poses a model once a tic. Each tic a model is drawn in, its
+pose is kept, and with it the pose of the tic before; a frame between tics
+poses it part of the way from the one to the other, joint by joint. Over a
+sixtieth of a second a straight line between two poses is near enough to the
+turn each joint makes.
+
+again is set if the model as it stands has to be made again: it is to be
+posed between tics, or it was and is now to stand as the game gave it.
+
+The joints returned last until the end of the frame.
+===================
+*/
+const idJointMat *R_TicPose( idRenderEntityLocal *def, bool &again ) {
+	const int	num = def->parms.numJoints;
+	const int	bytes = num * sizeof( idJointMat );
+
+	again = false;
+	if ( !r_lerpWorld.GetBool() || !def->parms.joints || num <= 0 || def->world != session->rw ) {
+		again = def->ticPoseBetween;
+		def->ticPoseBetween = false;
+		return NULL;
+	}
+	// once a frame: what was posed is in use by whoever asked first
+	if ( def->ticPoseFrame == tr.frameCount ) {
+		return NULL;
+	}
+
+	// the pose of this tic, the first time it is seen
+	if ( def->ticPoseTic != rw_gameTic || def->ticPoseNum != num ) {
+		if ( def->ticPoseNum != num ) {
+			R_FreeTicPose( def );
+			def->ticPoseFrom = (idJointMat *) Mem_Alloc16( bytes );
+			def->ticPoseTo = (idJointMat *) Mem_Alloc16( bytes );
+			def->ticPoseNum = num;
+		}
+		if ( def->ticPoseTic >= 0 && rw_gameTic - def->ticPoseTic <= 3 ) {
+			idJointMat *was = def->ticPoseFrom;
+			def->ticPoseFrom = def->ticPoseTo;
+			def->ticPoseTo = was;
+		} else {
+			// not drawn of late: it was as it is
+			memcpy( def->ticPoseFrom, def->parms.joints, bytes );
+		}
+		memcpy( def->ticPoseTo, def->parms.joints, bytes );
+		def->ticPoseTic = rw_gameTic;
+	}
+
+	if ( !rw_betweenTics || !memcmp( def->ticPoseFrom, def->ticPoseTo, bytes ) ) {
+		again = def->ticPoseBetween;
+		def->ticPoseBetween = false;
+		if ( again ) {
+			def->ticPoseFrame = tr.frameCount;
+		}
+		return NULL;
+	}
+
+	idJointMat *pose = (idJointMat *) R_FrameAlloc( bytes );
+	const float *from = def->ticPoseFrom[0].ToFloatPtr();
+	const float *to = def->ticPoseTo[0].ToFloatPtr();
+	float *out = pose[0].ToFloatPtr();
+	const float fraction = rw_ticFraction;
+	for ( int i = 0; i < num * 12; i++ ) {
+		out[i] = from[i] + fraction * ( to[i] - from[i] );
+	}
+	def->ticPoseBetween = true;
+	def->ticPoseFrame = tr.frameCount;
+	again = true;
+	rw_posed++;
+	return pose;
+}
+
+void R_FreeTicPose( idRenderEntityLocal *def ) {
+	if ( def->ticPoseFrom ) {
+		Mem_Free16( def->ticPoseFrom );
+		def->ticPoseFrom = NULL;
+	}
+	if ( def->ticPoseTo ) {
+		Mem_Free16( def->ticPoseTo );
+		def->ticPoseTo = NULL;
+	}
+	def->ticPoseNum = 0;
+	def->ticPoseTic = -1;
+}
+
+/*
+===================
+R_ViewBetweenTics
+
+A view of the game's that the game has not itself placed between tics (a
+camera's, in a cinematic): it is drawn on its way from where it was a tic ago,
+as what it looks at is. Not across a cut, and not a view that is not the one
+the game last gave, as when it draws the scene twice for an effect.
+===================
+*/
+static bool R_ViewBetweenTics( const renderView_t *given, renderView_t &placed ) {
+	if ( !rw_betweenTics ) {
+		rw_ticViewTic = -1;
+		return false;
+	}
+	placed = *given;
+	// (what goes by the view's clock, particles and materials, moves each frame too)
+	placed.time -= (int) ( ( 1.0f - rw_ticFraction ) * USERCMD_MSEC );
+	if ( r_ticViewSet.GetBool() ) {
+		rw_ticViewTic = -1;
+		return true;
+	}
+	if ( rw_ticViewTic != rw_gameTic ) {
+		rw_ticViewFrom = ( rw_ticViewTic >= 0 ) ? rw_ticViewTo : *given;
+		rw_ticViewTo = *given;
+		rw_ticViewTic = rw_gameTic;
+	}
+	if ( given->vieworg != rw_ticViewTo.vieworg || given->viewaxis != rw_ticViewTo.viewaxis ) {
+		return true;
+	}
+	if ( ( rw_ticViewTo.vieworg - rw_ticViewFrom.vieworg ).LengthSqr() > Square( 32.0f )
+			|| rw_ticViewTo.viewaxis[0] * rw_ticViewFrom.viewaxis[0] < 0.97f ) {
+		// a cut
+		return true;
+	}
+	R_TicBetween( rw_ticViewFrom.vieworg, rw_ticViewFrom.viewaxis, rw_ticViewTo.vieworg, rw_ticViewTo.viewaxis, rw_ticFraction, placed.vieworg, placed.viewaxis );
+	return true;
+}
+
 int c_callbackUpdate;
 
 void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEntity_t *re ) {
@@ -222,6 +517,9 @@ void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEn
 	}
 
 	idRenderEntityLocal	*def = entityDefs[entityHandle];
+	if ( !rw_placing && def ) {
+		R_TicNoted( def, false, re->origin, re->axis, re->weaponDepthHack );
+	}
 	if ( def ) {
 
 		if ( !re->forceUpdate ) {
@@ -266,6 +564,7 @@ void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEn
 
 		def->world = this;
 		def->index = entityHandle;
+		R_TicNoted( def, true, re->origin, re->axis, true );
 	}
 
 	def->parms = *re;
@@ -317,6 +616,8 @@ void idRenderWorldLocal::FreeEntityDef( qhandle_t entityHandle ) {
 	}
 
 	// if we are playing a demo, these will have been freed
+	R_FreeTicPose( def );
+
 	// in R_FreeEntityDefDerivedData(), otherwise the gui
 	// object still exists in the game
 
@@ -397,6 +698,9 @@ void idRenderWorldLocal::UpdateLightDef( qhandle_t lightHandle, const renderLigh
 
 	bool justUpdate = false;
 	idRenderLightLocal *light = lightDefs[lightHandle];
+	if ( !rw_placing && light ) {
+		R_TicNoted( light, false, rlight->origin, rlight->axis, false );
+	}
 	if ( light ) {
 		// if the shape of the light stays the same, we don't need to dump
 		// any of our derived data, because shader parms are calculated every frame
@@ -420,6 +724,7 @@ void idRenderWorldLocal::UpdateLightDef( qhandle_t lightHandle, const renderLigh
 
 		light->world = this;
 		light->index = lightHandle;
+		R_TicNoted( light, true, rlight->origin, rlight->axis, true );
 	}
 
 	light->parms = *rlight;
@@ -678,6 +983,15 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView ) {
 
 	if ( !glConfig.isInitialized ) {
 		return;
+	}
+
+	// the game's world, between two of its tics
+	renderView_t	placed;
+	if ( this == session->rw ) {
+		PlaceBetweenTics();
+		if ( R_ViewBetweenTics( renderView, placed ) ) {
+			renderView = &placed;
+		}
 	}
 
 	copy = *renderView;

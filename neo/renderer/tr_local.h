@@ -198,6 +198,16 @@ public:
 	idRenderWorldLocal *	world;
 	int						index;					// in world lightdefs
 
+	// Between two tics of the game: where it was a tic ago and where the game
+	// last put it, and whether it is still to be drawn all the way there.
+	// See R_SetBetweenTics.
+	idVec3					ticFromOrigin;
+	idMat3					ticFromAxis;
+	idVec3					ticToOrigin;
+	idMat3					ticToAxis;
+	int						ticMoved;				// the tic of the game it was last moved in
+	bool					ticPending;
+
 	int						areaNum;				// if not -1, we may be able to cull all the light's
 													// interactions if !viewDef->connectedAreas[areaNum]
 
@@ -254,6 +264,24 @@ public:
 
 	idRenderWorldLocal *	world;
 	int						index;					// in world entityDefs
+
+	// the pose of a model with joints as it was a tic ago and at the last: see R_TicPose
+	idJointMat *			ticPoseFrom;
+	idJointMat *			ticPoseTo;
+	int						ticPoseNum;				// joints in each
+	int						ticPoseTic;				// the tic ticPoseTo was taken in, -1 if none
+	int						ticPoseFrame;			// the frame it was last posed between tics in
+	bool					ticPoseBetween;			// the model as it stands was posed between tics
+
+	// Between two tics of the game: where it was a tic ago and where the game
+	// last put it, and whether it is still to be drawn all the way there.
+	// See R_SetBetweenTics.
+	idVec3					ticFromOrigin;
+	idMat3					ticFromAxis;
+	idVec3					ticToOrigin;
+	idMat3					ticToAxis;
+	int						ticMoved;				// the tic of the game it was last moved in
+	bool					ticPending;
 
 	int						lastModifiedFrameNum;	// to determine if it is constantly changing,
 													// and should go in the dynamic frame memory, or kept
@@ -577,6 +605,9 @@ extern idCVar r_guiAspect;
 extern idCVar r_guiAspectNow;
 float R_GuiAspectScale( void );
 void R_ResolutionChosen( void );
+extern idCVar r_ticViewSet;
+const idJointMat *R_TicPose( idRenderEntityLocal *def, bool &again );
+void R_FreeTicPose( idRenderEntityLocal *def );
 void PT_Shutdown( void );
 void PT_Reload_f( const idCmdArgs &args );
 void PT_ListLights_f( const idCmdArgs &args );

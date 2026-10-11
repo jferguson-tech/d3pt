@@ -7417,6 +7417,7 @@ bool idPlayer::BeginViewBetweenTics( float fraction, float yaw, float pitch ) {
 	}
 	renderView->viewaxis = newAxis;
 	renderView->vieworg = newOrigin;
+	cvarSystem->SetCVarBool( "r_ticViewSet", true );
 
 	// the weapon in the hand goes with the view
 	idWeapon *held = weapon.GetEntity();
@@ -7437,6 +7438,7 @@ idPlayer::EndViewBetweenTics
 */
 void idPlayer::EndViewBetweenTics( void ) {
 	*renderView = ticView;
+	cvarSystem->SetCVarBool( "r_ticViewSet", false );
 	idWeapon *held = weapon.GetEntity();
 	if ( held && held->GetModelDefHandle() >= 0 ) {
 		gameRenderWorld->UpdateEntityDef( held->GetModelDefHandle(), held->GetRenderEntity() );

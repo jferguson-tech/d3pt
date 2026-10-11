@@ -37,6 +37,14 @@ idRenderEntityLocal::idRenderEntityLocal() {
 
 	world					= NULL;
 	index					= 0;
+	ticMoved				= -1;
+	ticPending				= false;
+	ticPoseFrom				= NULL;
+	ticPoseTo				= NULL;
+	ticPoseNum				= 0;
+	ticPoseTic				= -1;
+	ticPoseFrame			= -1;
+	ticPoseBetween			= false;
 	lastModifiedFrameNum	= 0;
 	archived				= false;
 	dynamicModel			= NULL;
@@ -84,6 +92,8 @@ idRenderLightLocal::idRenderLightLocal() {
 	memset( lightProject, 0, sizeof( lightProject ) );
 	memset( frustum, 0, sizeof( frustum ) );
 	memset( frustumWindings, 0, sizeof( frustumWindings ) );
+	ticMoved				= -1;
+	ticPending				= false;
 
 	lightHasMoved			= false;
 	world					= NULL;
