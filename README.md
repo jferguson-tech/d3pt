@@ -99,6 +99,9 @@ Changed from the original release:
 - The maths library runs on its generic C++ path. The MMX, SSE and 3DNow
   paths are inline assembly, which the 64-bit compiler does not take.
 - A crash writes `crash.txt` beside the executable, with the call stack.
+- No CD key is asked for to start a game. The original would not start one
+  without `base/doomkey`, nor without `base/xpkey` once Resurrection of Evil
+  was installed.
 
 Left out of the build, though the sources are still in the tree:
 
