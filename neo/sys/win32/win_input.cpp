@@ -772,6 +772,9 @@ void IN_Frame( void ) {
 		if ( win32.mouseReleased ) {
 			shouldGrab = false;
 		}
+		if ( win32.mouseWaitClick ) {
+			shouldGrab = false;
+		}
 		if ( win32.movingWindow ) {
 			shouldGrab = false;
 		}

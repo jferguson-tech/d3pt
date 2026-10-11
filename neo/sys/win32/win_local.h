@@ -105,6 +105,7 @@ typedef struct {
 	bool			mouseReleased;		// when the game has the console down or is doing a long operation
 	bool			movingWindow;		// inhibit mouse grab when dragging the window
 	bool			mouseGrabbed;		// current state of grab and hide
+	bool			mouseWaitClick;		// the window was come back to: the mouse is not taken until it is clicked in
 
 	OSVERSIONINFOEX	osversion;
 

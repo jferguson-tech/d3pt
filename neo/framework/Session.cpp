@@ -2150,6 +2150,24 @@ idSessionLocal::ProcessEvent
 ===============
 */
 bool idSessionLocal::ProcessEvent( const sysEvent_t *event ) {
+	// where the desktop's pointer is, while the game does not hold the mouse:
+	// the gui that is up is told how far that is from where its own pointer is
+	sysEvent_t moved;
+	if ( event->evType == SE_MOUSE_ABS ) {
+		idUserInterface *gui = guiTest ? guiTest : guiActive;
+		if ( !gui || console->Active() ) {
+			return true;
+		}
+		moved = *event;
+		moved.evType = SE_MOUSE;
+		moved.evValue = event->evValue - (int) gui->CursorX();
+		moved.evValue2 = event->evValue2 - (int) gui->CursorY();
+		if ( !moved.evValue && !moved.evValue2 ) {
+			return true;
+		}
+		event = &moved;
+	}
+
 	// F11, unless it is bound to something, goes between the path tracer and OpenGL
 	if ( event->evType == SE_KEY && event->evValue == K_F11 && event->evValue2 == 1 && !idKeyInput::GetBinding( K_F11 )[0] ) {
 		cvarSystem->SetCVarBool( "r_pathTrace", !cvarSystem->GetCVarBool( "r_pathTrace" ) );
@@ -2542,7 +2560,9 @@ void idSessionLocal::Frame() {
 
 	// if the console is down, we don't need to hold
 	// the mouse cursor
-	if ( console->Active() || com_editorActive ) {
+	// nor while a menu is up: its pointer is worked by the desktop's, which is
+	// free to leave the window (in a window; full screen the mouse is always held)
+	if ( console->Active() || com_editorActive || guiActive || guiTest ) {
 		Sys_GrabMouseCursor( false );
 	} else {
 		Sys_GrabMouseCursor( true );
