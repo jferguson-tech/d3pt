@@ -30,7 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "codec.h"
 
-#ifndef HUGE
+#if defined( __linux__ ) && !defined( HUGE )
 #define HUGE HUGE_VAL		// the C library of Linux has no HUGE
 #endif
 
