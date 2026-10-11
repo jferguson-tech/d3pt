@@ -481,6 +481,7 @@ typedef struct {
 	const idImage *sky;		// it shows the sky: the six pictures of it, and nothing else is read
 	bool	holes;			// base's alpha cuts it out
 	bool	glass;			// a clear pane: base is its tint
+	bool	filter;			// glass whose picture the game multiplies what is behind by
 } ptRead_t;
 
 /*
@@ -550,6 +551,13 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 		if ( stage->texture.texgen != TG_EXPLICIT ) {
 			continue;		// what a surface mirrors, as the game fakes it: the tracer has the real thing
 		}
+		if ( ( stage->drawStateBits & GLS_COLORMASK ) == GLS_COLORMASK ) {
+			// It draws no colour, only alpha for a later stage to go by: on
+			// glass, where the reflection the game fakes is to show. Taken
+			// for the colour of the glass, every pane had the same picture
+			// laid over what was behind it.
+			continue;
+		}
 		if ( stage->lighting == SL_DIFFUSE && !diffuse ) {
 			diffuse = stage;
 		} else if ( stage->lighting == SL_AMBIENT && !unlit ) {
@@ -562,6 +570,7 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 	}
 	const shaderStage_t *shown = diffuse ? diffuse : unlit;
 	read.glass = PT_IsGlass( shader );
+	read.filter = read.glass && shown && ( shown->drawStateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) == ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO );
 	read.screen = shader->HasGui();
 	read.glows = !diffuse && unlit && !read.glass;
 	read.holes = shown && shown->hasAlphaTest && !read.glass;
@@ -639,7 +648,12 @@ static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int 
 	material.roughness = 0.85f;
 	material.flags = flags;
 	if ( read.glass ) {
-		material.alpha = idMath::ClampFloat( 0.0f, 0.95f, r_ptGlassTint.GetFloat() );
+		// (a pane with no colour of its own is clear: it shows by what it reflects)
+		material.alpha = base >= 0 ? idMath::ClampFloat( 0.0f, 0.95f, r_ptGlassTint.GetFloat() ) : 0.0f;
+		if ( read.filter && base >= 0 ) {
+			material.alpha = 0.0f;
+			material.flags |= PT_MAT_FILTER;
+		}
 		material.roughness = 0.05f;
 		material.flags |= PT_MAT_REFRACT;
 	}

@@ -53,6 +53,7 @@ const uint MAT_EMIT_MAPPED = 4096u;
 const uint MAT_NO_SHADOW = 8192u;
 const uint MAT_REFRACT = 16384u;
 const uint MAT_MIRROR = 32768u;
+const uint MAT_FILTER = 65536u;
 const uint MAT_WARP = 128u;
 const uint MAT_METAL_TEXTURE = 512u;
 const uint MAT_METAL_PAINTED = 1024u;
@@ -1108,8 +1109,12 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 
 	// the normals and tangents the host gave: 1 normals, 2 tangents
 	const int smooth_has = hit.moving ? fr.frame_has.x : fr.held.w;
+	// (Not a pane of glass, which bends what is seen through it by how its
+	// face is tilted, and comes out of a far face taken to be flat: where
+	// the normals of two panes that meet at an angle run into each other,
+	// each pane was a lens, with all of the view squeezed into it.)
 	vec3 n = s.ng;
-	if ((smooth_has & 1) != 0)
+	if ((smooth_has & 1) != 0 && (mat.flags & MAT_REFRACT) == 0u)
 	{
 		const vec3 sum = SmoothNormal(hit.moving, hit.tri, hit.bary);
 		if (dot(sum, sum) > 1.0e-8)

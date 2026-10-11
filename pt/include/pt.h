@@ -93,6 +93,10 @@ vertices appear counter clockwise.
 									   as sharp, and followed from frame to frame as
 									   well, as what is seen directly. Without the flag
 									   such a surface still mirrors. RTX backend only */
+#define PT_MAT_FILTER			65536u	/* see-through (alpha under 1): the texture is the
+									   colour of the glass, which what is seen through
+									   it is multiplied by, texel by texel. It covers
+									   nothing and is not lit. RTX backend only */
 #define PT_MAT_EMIT_MAPPED		4096u	/* emission_texture says where on the surface the
 									   material's light comes from, and stands for
 									   texture in all that is said of emission: a
