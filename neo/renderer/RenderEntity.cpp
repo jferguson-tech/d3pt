@@ -39,6 +39,12 @@ idRenderEntityLocal::idRenderEntityLocal() {
 	index					= 0;
 	ticMoved				= -1;
 	ticPending				= false;
+	ticPoseFrom				= NULL;
+	ticPoseTo				= NULL;
+	ticPoseNum				= 0;
+	ticPoseTic				= -1;
+	ticPoseFrame			= -1;
+	ticPoseBetween			= false;
 	lastModifiedFrameNum	= 0;
 	archived				= false;
 	dynamicModel			= NULL;

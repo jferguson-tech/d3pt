@@ -1128,11 +1128,23 @@ idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def ) {
 		R_ClearEntityDefDynamicModel( def );
 	}
 
+	// between two tics of the game a model with joints is posed between its last two poses
+	bool again;
+	const idJointMat *pose = R_TicPose( def, again );
+	if ( again ) {
+		R_ClearEntityDefDynamicModel( def );
+	}
+
 	// if we don't have a snapshot of the dynamic model, generate it now
 	if ( !def->dynamicModel ) {
 
 		// instantiate the snapshot of the dynamic model, possibly reusing memory from the cached snapshot
+		idJointMat *given = def->parms.joints;
+		if ( pose ) {
+			def->parms.joints = const_cast<idJointMat *>( pose );
+		}
 		def->cachedDynamicModel = model->InstantiateDynamicModel( &def->parms, tr.viewDef, def->cachedDynamicModel );
+		def->parms.joints = given;
 
 		if ( def->cachedDynamicModel ) {
 
