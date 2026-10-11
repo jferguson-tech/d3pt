@@ -1205,6 +1205,9 @@ idPlayer::idPlayer
 */
 idPlayer::idPlayer() {
 	memset( &usercmd, 0, sizeof( usercmd ) );
+	ticEyeFrame				= -1;
+	ticEyeBefore.Zero();
+	ticEyeNow.Zero();
 
 	noclip					= false;
 	godmode					= false;
@@ -8736,6 +8739,78 @@ void idPlayer::CalculateRenderView( void ) {
 
 	if ( g_showviewpos.GetBool() ) {
 		gameLocal.Printf( "%s : %s\n", renderView->vieworg.ToString(), renderView->viewaxis.ToAngles().ToString() );
+	}
+
+	// where the eye has been, for frames drawn between tics
+	if ( gameLocal.framenum != ticEyeFrame ) {
+		ticEyeBefore = ( gameLocal.framenum == ticEyeFrame + 1 ) ? ticEyeNow : renderView->vieworg;
+		ticEyeFrame = gameLocal.framenum;
+	}
+	ticEyeNow = renderView->vieworg;
+}
+
+/*
+==================
+idPlayer::BeginViewBetweenTics
+
+The game runs 60 times a second and frames may be drawn more often. For one
+drawn between two tics the player's own view is put where the eye was on its
+way from the tic before last to the last, and turned by as much as the mouse
+has turned it since. The weapon in the hand is carried with it. Nothing else
+moves until the next tic, and nothing of this is seen by the game: it is
+undone by EndViewBetweenTics once the frame is drawn.
+
+Not while the view is not the player's to turn.
+==================
+*/
+bool idPlayer::BeginViewBetweenTics( float fraction, float yaw, float pitch ) {
+	if ( !renderView || gameLocal.isMultiplayer || gameLocal.inCinematic || gameLocal.GetCamera() || privateCameraView
+			|| health <= 0 || spectating || objectiveSystemOpen || influenceActive || pm_thirdPerson.GetBool() ) {
+		return false;
+	}
+	if ( ActiveGui() || focusUI ) {
+		// the mouse is working a screen
+		yaw = pitch = 0.0f;
+	}
+
+	ticView = *renderView;
+
+	idAngles to = viewAngles;
+	to.yaw += yaw;
+	to.pitch = idMath::ClampFloat( pm_minviewpitch.GetFloat(), pm_maxviewpitch.GetFloat(), to.pitch + pitch );
+	const idMat3 oldAxis = renderView->viewaxis;
+	const idVec3 oldOrigin = renderView->vieworg;
+	const idMat3 newAxis = oldAxis * ( viewAngles.ToMat3().Transpose() * to.ToMat3() );
+	idVec3 newOrigin = oldOrigin;
+	if ( ticEyeFrame == gameLocal.framenum && ( ticEyeNow - ticEyeBefore ).LengthSqr() < Square( 48.0f ) ) {
+		// (further than that in a tic, it did not walk there)
+		newOrigin = ticEyeBefore + idMath::ClampFloat( 0.0f, 1.0f, fraction ) * ( ticEyeNow - ticEyeBefore );
+	}
+	renderView->viewaxis = newAxis;
+	renderView->vieworg = newOrigin;
+
+	// the weapon in the hand goes with the view
+	idWeapon *held = weapon.GetEntity();
+	if ( held && held->GetModelDefHandle() >= 0 ) {
+		renderEntity_t entity = *held->GetRenderEntity();
+		const idMat3 by = oldAxis.Transpose() * newAxis;
+		entity.origin = newOrigin + ( entity.origin - oldOrigin ) * by;
+		entity.axis = entity.axis * by;
+		gameRenderWorld->UpdateEntityDef( held->GetModelDefHandle(), &entity );
+	}
+	return true;
+}
+
+/*
+==================
+idPlayer::EndViewBetweenTics
+==================
+*/
+void idPlayer::EndViewBetweenTics( void ) {
+	*renderView = ticView;
+	idWeapon *held = weapon.GetEntity();
+	if ( held && held->GetModelDefHandle() >= 0 ) {
+		gameRenderWorld->UpdateEntityDef( held->GetModelDefHandle(), held->GetRenderEntity() );
 	}
 }
 

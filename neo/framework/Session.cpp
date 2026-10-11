@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "Session_local.h"
 
 idCVar	idSessionLocal::com_showAngles( "com_showAngles", "0", CVAR_SYSTEM | CVAR_BOOL, "" );
+idCVar	idSessionLocal::com_maxFPS( "com_maxFPS", "144", CVAR_SYSTEM | CVAR_INTEGER | CVAR_ARCHIVE, "the most frames drawn a second in a single player game; the game itself runs 60 times a second, and between two of those the player's view goes on moving; 0: a frame for each of the 60, as it was", 0, 1000 );
 idCVar	idSessionLocal::com_minTics( "com_minTics", "1", CVAR_SYSTEM, "" );
 idCVar	idSessionLocal::com_showTics( "com_showTics", "0", CVAR_SYSTEM | CVAR_BOOL, "" );
 idCVar	idSessionLocal::com_fixedTic( "com_fixedTic", "0", CVAR_SYSTEM | CVAR_INTEGER, "", 0, 10 );
@@ -2443,6 +2444,18 @@ void idSessionLocal::Draw() {
 		if ( !com_skipGameDraw.GetBool() && GetLocalClientNum() >= 0 ) {
 			// draw the game view
 			int	start = Sys_Milliseconds();
+			if ( freeFrames && !guiActive ) {
+				// between two of the game's tics: the time drawn is a tic behind
+				// now, and the view is turned as far as the mouse has turned it
+				const usercmd_t now = usercmdGen->GetDirectUsercmd();
+				const double ticClocks = Sys_ClockTicksPerSecond() * USERCMD_MSEC * 0.001;
+				const float fraction = (float) ( ( Sys_GetClockTicks() - lastTicClock ) / ticClocks );
+				game->SetViewBetweenTics( true, idMath::ClampFloat( 0.0f, 1.0f, fraction ),
+					SHORT2ANGLE( (short) ( now.angles[YAW] - lastTicCmd.angles[YAW] ) ),
+					SHORT2ANGLE( (short) ( now.angles[PITCH] - lastTicCmd.angles[PITCH] ) ) );
+			} else {
+				game->SetViewBetweenTics( false, 0.0f, 0.0f, 0.0f );
+			}
 			gameDraw = game->Draw( GetLocalClientNum() );
 			int end = Sys_Milliseconds();
 			time_gameDraw += ( end - start );	// note time used for com_speeds
@@ -2621,6 +2634,29 @@ void idSessionLocal::Frame() {
 		minTic = latchedTicNumber;
 	}
 
+	// Frames not held to the game's tics: one is drawn as soon as it is due,
+	// whether or not the game has anything new, and the game shows the player's
+	// view as it is between tics (idGame::SetViewBetweenTics).
+	freeFrames = com_maxFPS.GetInteger() > 0 && mapSpawned && !guiActive && !guiTest && !readDemo && !writeDemo && !cmdDemoFile
+		&& !aviCaptureMode && !timeDemo && !com_fixedTic.GetInteger() && com_minTics.GetInteger() <= 1
+		&& !com_asyncInput.GetBool() && !idAsyncNetwork::IsActive() && !insideExecuteMapChange;
+	if ( freeFrames ) {
+		const double perSecond = Sys_ClockTicksPerSecond();
+		const double frame = perSecond / com_maxFPS.GetInteger();
+		double now = Sys_GetClockTicks();
+		if ( nextFrameClock > now + frame || nextFrameClock < now - 4.0 * frame ) {
+			// (out of step: begin again)
+			nextFrameClock = now;
+		}
+		while ( now < nextFrameClock ) {
+			// (a sleep may be much longer than asked)
+			Sys_Sleep( ( nextFrameClock - now ) > 0.003 * perSecond ? 1 : 0 );
+			now = Sys_GetClockTicks();
+		}
+		nextFrameClock += frame;
+		minTic = latchedTicNumber;
+	}
+
 	// FIXME: deserves a cleanup and abstraction
 #if defined( _WIN32 )
 	// Spin in place if needed.  The game should yield the cpu if
@@ -2709,6 +2745,9 @@ void idSessionLocal::Frame() {
 
 	// see how many usercmds we are going to run
 	int	numCmdsToRun = latchedTicNumber - lastGameTic;
+	if ( numCmdsToRun > 0 ) {
+		lastTicClock = com_ticClock;
+	}
 
 	// don't let a long onDemand sound load unsync everything
 	if ( timeHitch ) {
@@ -2809,6 +2848,7 @@ void idSessionLocal::RunGameTic() {
 		}
 		lastGameTic++;
 	}
+	lastTicCmd = cmd;
 
 	// run the game logic every player move
 	int	start = Sys_Milliseconds();
