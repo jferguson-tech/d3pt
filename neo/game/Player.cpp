@@ -2618,6 +2618,8 @@ void idPlayer::DrawHUD( idUserInterface *_hud ) {
 
 	weapon.GetEntity()->UpdateGUI();
 
+	// (on a screen wider than 4:3 it keeps its shape: see r_guiAspect)
+	cvarSystem->SetCVarBool( "r_guiAspectNow", true );
 	_hud->Redraw( gameLocal.realClientTime );
 
 	// weapon targeting crosshair
@@ -2626,6 +2628,7 @@ void idPlayer::DrawHUD( idUserInterface *_hud ) {
 			cursor->Redraw( gameLocal.realClientTime );
 		}
 	}
+	cvarSystem->SetCVarBool( "r_guiAspectNow", false );
 }
 
 /*

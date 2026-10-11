@@ -37,6 +37,59 @@ If you have questions concerning this license or the applicable additional terms
 
 extern idCVar r_skipGuiShaders;		// 1 = don't render any gui elements on surfaces
 
+int R_ScreenSizes( int *widths, int *heights, int max );
+
+/*
+================
+UI_MenuScreenSizes
+
+The main menu's choice of screen size offers six sizes, all 4:3, by their
+numbers as modes. In the menu's text, as it is read, the choice is given the
+sizes this screen has instead, and sets r_resolution to the one chosen. The
+menu itself is a file of the game's data and is not changed.
+================
+*/
+static void UI_MenuScreenSizes( idStr &text ) {
+	int widths[256], heights[256];
+	int count = R_ScreenSizes( widths, heights, 255 );
+
+	// with the one in use, which need not be one of the screen's
+	const int width = renderSystem->GetScreenWidth(), height = renderSystem->GetScreenHeight();
+	int i;
+	for ( i = 0; i < count; i++ ) {
+		if ( widths[i] == width && heights[i] == height ) {
+			break;
+		}
+	}
+	if ( i == count && width > 0 && height > 0 ) {
+		widths[count] = width;
+		heights[count] = height;
+		count++;
+	}
+	if ( count < 2 ) {
+		return;
+	}
+
+	// from the choice's "choices" to the end of its line naming r_mode
+	const int choice = text.Find( "choiceDef OS2Primary" );
+	if ( choice < 0 ) {
+		return;
+	}
+	const int from = text.Find( "choices", true, choice );
+	const int named = text.Find( "\"r_mode\"", true, choice );
+	if ( from < 0 || named < from || named - choice > 600 ) {
+		return;
+	}
+	const int to = named + 8;
+
+	idStr sizes;
+	for ( i = 0; i < count; i++ ) {
+		sizes += va( "%s%i x %i", i ? ";" : "", widths[i], heights[i] );
+	}
+	idStr put = va( "choices \"%s\"\n values \"%s\"\n cvar \"r_resolution\"", sizes.c_str(), sizes.c_str() );
+	text = text.Left( from ) + put + text.Right( text.Length() - to );
+}
+
 idUserInterfaceManagerLocal	uiManagerLocal;
 idUserInterfaceManager *	uiManager = &uiManagerLocal;
 
@@ -307,6 +360,7 @@ bool idUserInterfaceLocal::InitFromFile( const char *qpath, bool rebuild, bool c
 		if ( length > 0 && text ) {
 			idStr whole;
 			whole.Append( text, length );
+			UI_MenuScreenSizes( whole );
 			const int end = whole.Last( '}' );
 			if ( end > 0 ) {
 				idStr added;

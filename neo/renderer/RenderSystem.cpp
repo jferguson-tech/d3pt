@@ -331,8 +331,37 @@ DrawStretchPic
 */
 void idRenderSystemLocal::DrawStretchPic( const idDrawVert *verts, const glIndex_t *indexes, int vertCount, int indexCount, const idMaterial *material, 
 									   bool clip, float min_x, float min_y, float max_x, float max_y ) {
+	const float scale = r_guiAspectNow.GetBool() ? R_GuiAspectScale() : 1.0f;
+	if ( scale < 1.0f && vertCount > 0 ) {
+		idDrawVert *moved = (idDrawVert *) _alloca16( vertCount * sizeof( idDrawVert ) );
+		memcpy( moved, verts, vertCount * sizeof( idDrawVert ) );
+		for ( int i = 0; i < vertCount; i++ ) {
+			moved[i].xyz.x = 320.0f + ( moved[i].xyz.x - 320.0f ) * scale;
+		}
+		guiModel->DrawStretchPic( moved, indexes, vertCount, indexCount, material,
+			clip, 320.0f + ( min_x - 320.0f ) * scale, min_y, 320.0f + ( max_x - 320.0f ) * scale, max_y );
+		return;
+	}
 	guiModel->DrawStretchPic( verts, indexes, vertCount, indexCount, material,
 		clip, min_x, min_y, max_x, max_y );
+}
+
+/*
+=============
+R_GuiAspectScale
+
+What is drawn in two dimensions is laid out in 640 by 480 and stretched over
+the screen, whatever its shape. Menus and the HUD were made for 4:3. On a
+wider screen, while r_guiAspectNow is set, each is drawn that shape in the
+middle: this is how much narrower than the screen, 1 if not at all.
+=============
+*/
+float R_GuiAspectScale( void ) {
+	if ( !r_guiAspect.GetBool() || glConfig.vidWidth <= 0 || glConfig.vidHeight <= 0 ) {
+		return 1.0f;
+	}
+	const float scale = ( 4.0f * glConfig.vidHeight ) / ( 3.0f * glConfig.vidWidth );
+	return scale < 0.99f ? scale : 1.0f;
 }
 
 /*
@@ -343,6 +372,11 @@ x/y/w/h are in the 0,0 to 640,480 range
 =============
 */
 void idRenderSystemLocal::DrawStretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, const idMaterial *material ) {
+	if ( r_guiAspectNow.GetBool() ) {
+		const float scale = R_GuiAspectScale();
+		x = 320.0f + ( x - 320.0f ) * scale;
+		w *= scale;
+	}
 	guiModel->DrawStretchPic( x, y, w, h, s1, t1, s2, t2, material );
 }
 
@@ -354,6 +388,12 @@ x/y/w/h are in the 0,0 to 640,480 range
 =============
 */
 void idRenderSystemLocal::DrawStretchTri( idVec2 p1, idVec2 p2, idVec2 p3, idVec2 t1, idVec2 t2, idVec2 t3, const idMaterial *material ) {
+	if ( r_guiAspectNow.GetBool() ) {
+		const float scale = R_GuiAspectScale();
+		p1.x = 320.0f + ( p1.x - 320.0f ) * scale;
+		p2.x = 320.0f + ( p2.x - 320.0f ) * scale;
+		p3.x = 320.0f + ( p3.x - 320.0f ) * scale;
+	}
 	tr.guiModel->DrawStretchTri( p1, p2, p3, t1, t2, t3, material );
 }
 
@@ -626,6 +666,7 @@ BeginFrame
 */
 void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	PT_Settings();
+	R_ResolutionChosen();
 	setBufferCommand_t	*cmd;
 
 	if ( !glConfig.isInitialized ) {
