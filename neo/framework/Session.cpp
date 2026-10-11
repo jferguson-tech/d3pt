@@ -2150,6 +2150,12 @@ idSessionLocal::ProcessEvent
 ===============
 */
 bool idSessionLocal::ProcessEvent( const sysEvent_t *event ) {
+	// F11, unless it is bound to something, goes between the path tracer and OpenGL
+	if ( event->evType == SE_KEY && event->evValue == K_F11 && event->evValue2 == 1 && !idKeyInput::GetBinding( K_F11 )[0] ) {
+		cvarSystem->SetCVarBool( "r_pathTrace", !cvarSystem->GetCVarBool( "r_pathTrace" ) );
+		return true;
+	}
+
 	// F10, unless it is bound to something, puts the path tracer's settings over the game and takes them away
 	if ( event->evType == SE_KEY && event->evValue == K_F10 && event->evValue2 == 1 && !idKeyInput::GetBinding( K_F10 )[0] ) {
 		if ( guiActive && guiActive == guiPathTrace ) {

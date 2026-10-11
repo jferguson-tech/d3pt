@@ -47,7 +47,7 @@ The main ones are in the menus: Options has a Path Tracing item under
 Controls, Game Options, System and Defaults, and in a game F10 (if it is not
 bound to anything) or the `pathTraceMenu` command puts the same panel over
 the view. Its Quality row sets scale, paths, bounces and lights weighed
-together.
+together. F11 (likewise if it is not bound) goes between the path tracer and OpenGL.
 
 All are console variables as well; most are saved.
 
