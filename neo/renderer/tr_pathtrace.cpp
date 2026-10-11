@@ -86,7 +86,7 @@ extern "C" pt_backend_t *pt_rtx_create( const pt_create_t *ci, char *err, int er
 int RB_STD_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs );
 
 idCVar r_pathTrace( "r_pathTrace", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "draw 3D views with the path tracer" );
-idCVar r_ptScale( "r_ptScale", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: resolution traced at, as a fraction of the view" );
+idCVar r_ptScale( "r_ptScale", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: resolution traced at, as a fraction of the view" );
 idCVar r_ptSamples( "r_ptSamples", "1", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: paths per pixel per frame" );
 idCVar r_ptBounces( "r_ptBounces", "3", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: bounces after the first surface" );
 idCVar r_ptExposure( "r_ptExposure", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: exposure" );
@@ -102,6 +102,9 @@ idCVar r_ptMaterials( "r_ptMaterials", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARC
 idCVar r_ptSpecular( "r_ptSpecular", "1.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much of the light a surface reflects, for a white texel of its specular map; needs reloadPathTrace" );
 idCVar r_ptGloss( "r_ptGloss", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how rough a surface with a specular map is, 0.05 a mirror to 1; it sets how wide a highlight is; needs reloadPathTrace" );
 idCVar r_ptSky( "r_ptSky", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright the sky is, for a white texel of its pictures; it lights what it shines on; needs reloadPathTrace" );
+idCVar r_ptAntialias( "r_ptAntialias", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: blend frames over time to smooth edges; it also softens the whole picture" );
+idCVar r_ptFilter( "r_ptFilter", "2", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: what is done about noise: 2 frames are blended over time and the picture filtered, 1 neither but frames add up at rest, 0 neither" );
+idCVar r_ptHistory( "r_ptHistory", "8", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: frames of lighting kept while things change" );
 idCVar r_ptOverlay( "r_ptOverlay", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: OpenGL draws over the traced view what the tracer leaves out: computer screens, particles, decals, flares" );
 idCVar r_ptTonemap( "r_ptTonemap", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: how light is turned into a picture: 0 filmic, 1 neutral, 2 clipped as the game clips it" );
 idCVar r_ptContrast( "r_ptContrast", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: contrast of the picture, 1 = unchanged" );
@@ -1484,8 +1487,8 @@ bool PT_DrawView( void ) {
 	view.bounces = Max( 0, r_ptBounces.GetInteger() );
 	view.exposure = r_ptExposure.GetFloat();
 	view.auto_exposure = r_ptAutoExposure.GetBool();
-	view.antialias = 1;
-	view.filter = 2;
+	view.antialias = r_ptAntialias.GetBool();
+	view.filter = r_ptFilter.GetInteger();
 	view.view_mode = r_ptView.GetInteger();
 	view.reflections = 2;
 	view.refraction = r_ptRefraction.GetBool();
@@ -1495,7 +1498,7 @@ bool PT_DrawView( void ) {
 	view.firefly_clamp = r_ptFireflyClamp.GetFloat();
 	view.texture_filter = 1;
 	view.denoise = r_ptDenoise.GetInteger();
-	view.history = 8;
+	view.history = r_ptHistory.GetInteger();
 	view.reflection_history = 1;
 	view.saturation = r_ptSaturation.GetFloat();
 	view.contrast = r_ptContrast.GetFloat();
