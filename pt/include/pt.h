@@ -55,9 +55,12 @@ vertices appear counter clockwise.
 #define PT_MAT_WARP				128u	/* the texture swims, as old engines drew liquids */
 #define PT_MAT_EMIT_BRIGHT		64u	/* only the texture's bright texels emit: screens,
 									   buttons, indicator lights */
-#define PT_MAT_HELD				256u	/* carried by the eye, as a weapon in hand is: with
-									   motion blur it is seen from where the eye is when
-									   the shutter closes, however the eye moved */
+#define PT_MAT_HELD				256u	/* carried by the eye, as a weapon in hand is: only
+									   the eye sees it, not a mirror nor light finding
+									   its way about, and it casts shadows on itself
+									   alone; with motion blur it is seen from where the
+									   eye is when the shutter closes, however the eye
+									   moved. RTX backend only */
 #define PT_MAT_METAL_TEXTURE	512u	/* the blue of normal_texture is how metallic the
 									   surface is there, in place of metallic; the
 									   normal's z is worked out from its x and y */
@@ -85,6 +88,11 @@ vertices appear counter clockwise.
 									   more the thicker the pane and the more it is
 									   seen from the side, and wavers where the glass
 									   is uneven. RTX backend only */
+#define PT_MAT_MIRROR			32768u	/* a flat mirror (roughness 0, metallic 1): the eye
+									   looks through it at what it shows, which is then
+									   as sharp, and followed from frame to frame as
+									   well, as what is seen directly. Without the flag
+									   such a surface still mirrors. RTX backend only */
 #define PT_MAT_EMIT_MAPPED		4096u	/* emission_texture says where on the surface the
 									   material's light comes from, and stands for
 									   texture in all that is said of emission: a
