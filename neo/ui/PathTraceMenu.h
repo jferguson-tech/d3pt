@@ -39,5 +39,8 @@ class idUserInterfaceLocal;
 void	PT_MenuForMainMenu( idStr &text );
 void	PT_MenuAlone( idStr &text );
 void	PT_MenuFrame( idUserInterfaceLocal *gui );
+void	PT_MenuReset( void );
+
+#define PT_MENU_RESET		"pathTraceReset"		// the command the panel's Reset to Defaults gives
 
 #endif

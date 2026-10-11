@@ -388,7 +388,13 @@ const char *idUserInterfaceLocal::HandleEvent( const sysEvent_t *event, int _tim
 	}
 
 	if ( desktop ) {
-		return desktop->HandleEvent( event, updateVisuals );
+		const char *cmd = desktop->HandleEvent( event, updateVisuals );
+		// the path tracer's panel has one command of its own, which goes no further
+		if ( pathTraceMenu && cmd && !idStr::Icmp( cmd, PT_MENU_RESET ) ) {
+			PT_MenuReset();
+			return "";
+		}
+		return cmd;
 	} 
 
 	return "";
