@@ -239,6 +239,8 @@ void PT_MenuReset( void ) {
 	for ( int i = 0; i < sizeof( ptMenuAlsoReset ) / sizeof( ptMenuAlsoReset[0] ); i++ ) {
 		cmdSystem->BufferCommandText( CMD_EXEC_NOW, va( "reset %s\n", ptMenuAlsoReset[i] ) );
 	}
+	// (a reset alone does not have the settings saved again)
+	cvarSystem->SetModifiedFlags( CVAR_ARCHIVE );
 }
 
 /*
