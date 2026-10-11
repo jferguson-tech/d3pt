@@ -31,10 +31,12 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "win_local.h"
 #include "../../renderer/tr_local.h"
+#include "../../framework/Session_local.h"
 
 LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam );
 
 static bool s_alttab_disabled;
+static bool s_wasInactive;		// the window has been left at least once
 
 static void WIN_DisableAltTab( void ) {
 	if ( s_alttab_disabled || win32.win_allowAltTab.GetBool() ) {
@@ -325,6 +327,16 @@ LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam ) {
 				fActive = LOWORD(wParam);
 				fMinimized = (BOOL) HIWORD(wParam);
 
+				// Come back to, a window does not take the mouse until it is
+				// clicked in: Alt+Tab or a click on its title bar leaves the
+				// pointer the desktop's.
+				if ( fActive != WA_INACTIVE && !win32.activeApp && s_wasInactive && !win32.cdsFullscreen ) {
+					win32.mouseWaitClick = true;
+				}
+				if ( fActive == WA_INACTIVE ) {
+					s_wasInactive = true;
+				}
+
 				win32.activeApp = (fActive != WA_INACTIVE);
 				if ( win32.activeApp ) {
 					idKeyInput::ClearStates();
@@ -433,11 +445,53 @@ LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam ) {
 			WIN_Sizing(wParam, (RECT *)lParam);
 			break;
 
+		// While the game holds the mouse it reads it from DirectInput and none
+		// of these come. While it does not (in a window, with a menu or the
+		// console up) the pointer is the desktop's, and a menu is worked by it.
+		case WM_SETCURSOR:
+			if ( LOWORD( lParam ) == HTCLIENT && win32.activeApp && !win32.mouseGrabbed
+					&& sessLocal.GetActiveMenu() && !console->Active() ) {
+				// the menu draws a pointer of its own
+				SetCursor( NULL );
+				return TRUE;
+			}
+			break;
+
+		case WM_LBUTTONDOWN:
 		case WM_RBUTTONDOWN:
-		case WM_RBUTTONUP:
 		case WM_MBUTTONDOWN:
+			if ( win32.mouseWaitClick ) {
+				// the click that gives the mouse back to the game is not one for the game
+				win32.mouseWaitClick = false;
+				if ( !sessLocal.GetActiveMenu() ) {
+					break;
+				}
+			}
+			if ( !win32.mouseGrabbed ) {
+				SetCapture( hWnd );
+				Sys_QueEvent( win32.sysMsgTime, SE_KEY, uMsg == WM_LBUTTONDOWN ? K_MOUSE1 : uMsg == WM_RBUTTONDOWN ? K_MOUSE2 : K_MOUSE3, true, 0, NULL );
+			}
+			break;
+
+		case WM_LBUTTONUP:
+		case WM_RBUTTONUP:
 		case WM_MBUTTONUP:
+			if ( GetCapture() == hWnd ) {
+				ReleaseCapture();
+			}
+			if ( !win32.mouseGrabbed ) {
+				Sys_QueEvent( win32.sysMsgTime, SE_KEY, uMsg == WM_LBUTTONUP ? K_MOUSE1 : uMsg == WM_RBUTTONUP ? K_MOUSE2 : K_MOUSE3, false, 0, NULL );
+			}
+			break;
+
 		case WM_MOUSEMOVE: {
+			RECT	r;
+
+			if ( !win32.mouseGrabbed && win32.activeApp && GetClientRect( hWnd, &r ) && r.right > 0 && r.bottom > 0 ) {
+				const int x = idMath::ClampInt( 0, SCREEN_WIDTH, (short) LOWORD( lParam ) * SCREEN_WIDTH / r.right );
+				const int y = idMath::ClampInt( 0, SCREEN_HEIGHT, (short) HIWORD( lParam ) * SCREEN_HEIGHT / r.bottom );
+				Sys_QueEvent( win32.sysMsgTime, SE_MOUSE_ABS, x, y, 0, NULL );
+			}
 			break;
 		}
 		case WM_MOUSEWHEEL: {
