@@ -364,6 +364,31 @@ static bool PT_IsTraced( const idMaterial *shader ) {
 
 /*
 ================
+PT_IsMirror
+
+Whether a material is a mirror. The game draws one by drawing the scene a
+second time from behind it; the tracer has only to be told that the surface
+reflects everything and scatters nothing.
+================
+*/
+static bool PT_IsMirror( const idMaterial *shader ) {
+	bool other = false;
+
+	for ( int i = 0; i < shader->GetNumStages(); i++ ) {
+		const dynamicidImage_t dynamic = shader->GetStage( i )->texture.dynamic;
+		if ( dynamic == DI_MIRROR_RENDER ) {
+			return true;
+		}
+		if ( dynamic != DI_STATIC ) {
+			other = true;		// a camera's picture, or the like
+		}
+	}
+	// (the keyword "mirror" leaves no more trace than this)
+	return shader->GetSort() == SS_SUBVIEW && !other;
+}
+
+/*
+================
 PT_SkyOf
 
 The six pictures a material shows the sky by, if that is what it does: the
@@ -446,6 +471,7 @@ typedef struct {
 	int		shineWidth, shineHeight;
 	bool	glows;			// it is shown unlit
 	bool	screen;			// one of the game's computer screens: OpenGL draws what is on it
+	bool	mirror;			// a mirror: nothing else is read
 	const idImage *sky;		// it shows the sky: the six pictures of it, and nothing else is read
 	bool	holes;			// base's alpha cuts it out
 	bool	glass;			// a clear pane: base is its tint
@@ -504,6 +530,10 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 	memset( &read, 0, sizeof( read ) );
 	read.sky = PT_SkyOf( shader );
 	if ( read.sky ) {
+		return;
+	}
+	read.mirror = PT_IsMirror( shader );
+	if ( read.mirror ) {
 		return;
 	}
 	for ( i = 0; i < shader->GetNumStages(); i++ ) {
@@ -615,6 +645,13 @@ static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int 
 	}
 	if ( read.screen ) {
 		material.flags |= PT_MAT_BLACK;
+	}
+	if ( read.mirror ) {
+		material.texture = -1;
+		material.normal_texture = -1;
+		material.specular_texture = 0;
+		material.roughness = 0.0f;
+		material.metallic = 1.0f;
 	}
 	if ( read.glows ) {
 		// not lit by the game's lights: it shows as it is painted, so it glows
@@ -1209,13 +1246,14 @@ void PT_GatherView( void ) {
 				continue;
 			}
 		}
-		// the player's own body, which the player does not see, and what only the player sees
-		if ( def->parms.suppressSurfaceInViewID && def->parms.suppressSurfaceInViewID == viewID ) {
-			continue;
-		}
+		// what only some other view is shown
 		if ( def->parms.allowSurfaceInViewID && def->parms.allowSurfaceInViewID != viewID ) {
 			continue;
 		}
+		// The player's own body: the player does not see it, but a mirror
+		// shows it, and it stands in the light. Its shadow is cast only if the
+		// game casts it (g_showPlayerShadow).
+		const bool own = def->parms.suppressSurfaceInViewID && def->parms.suppressSurfaceInViewID == viewID;
 
 		// posed, if it is one that is: the game is asked as it would be were it in view
 		const idRenderModel *model = R_EntityDefDynamicModel( def );
@@ -1226,6 +1264,12 @@ void PT_GatherView( void ) {
 		unsigned int flags = 0;
 		if ( def->parms.noShadow ) {
 			flags |= PT_MAT_NO_SHADOW;
+		}
+		if ( own ) {
+			flags |= PT_MAT_CAMERA_INVISIBLE;
+			if ( def->parms.suppressShadowInViewID == viewID ) {
+				flags |= PT_MAT_NO_SHADOW;
+			}
 		}
 		if ( def->parms.weaponDepthHack ) {
 			flags |= PT_MAT_HELD;
