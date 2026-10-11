@@ -78,7 +78,7 @@ vec3 FogGlow(vec3 from, vec3 dir, float reach, float fog, float max_sample, vec3
 // the export planes where the view meets no surface
 void ExportNone(ivec2 pixel)
 {
-	if (fr.size.w == 0)
+	if (F_EXPORT == 0)
 		return;
 	imageStore(img_export[0], pixel, vec4(0.0));
 	imageStore(img_export[1], pixel, vec4(-1.0, -1.0, 0.0, 0.0));
@@ -101,7 +101,7 @@ void main()
 	const vec2 at = vec2(pixel) + 0.5 + vec2(fr.right.w, fr.up.w);
 	const vec3 frame_dir = EyeDir(fr.forward.xyz, fr.right.xyz, fr.up.xyz, at);
 	vec3 eye = fr.origin.xyz, eye_dir = frame_dir;
-	const bool blur = fr.open_origin.w != 0.0;
+	const bool blur = F_BLUR != 0.0;
 	if (blur)
 	{
 		const float t = Rand();
@@ -126,7 +126,7 @@ void main()
 	}
 
 	const float max_sample = fr.settings_f.x;
-	const float fog = fr.settings_f.w;
+	const float fog = F_FOG;
 	const int reflections = fr.settings.z;
 
 	// Walk through whatever is see-through to the first solid surface. The
@@ -205,7 +205,7 @@ void main()
 		// A liquid scatters a little of the light in it towards the eye: it
 		// glows where light comes down through it, in shafts the waves and
 		// whatever stands in the light's way break up.
-		const float shafts = fr.liquid.z * (absorb.r + absorb.g + absorb.b) * 0.1;		// what it scatters, per unit: a third of what it soaks up
+		const float shafts = F_WATER_SHAFTS * (absorb.r + absorb.g + absorb.b) * 0.1;		// what it scatters, per unit: a third of what it soaks up
 		// (Looked for one frame in four, and counted four times: it is faint,
 		// and gathered. Where the path goes through liquid more than once,
 		// in the last of it.)
@@ -429,7 +429,7 @@ void main()
 		return;
 	}
 
-	if (view_mode == 0 && fr.size.z > 0)
+	if (view_mode == 0 && F_WATERS > 0)
 		AddWater(surf, MaxComponent(absorb) > 0.0);
 	vec3 kd = surf.kd * through * tint;
 	const vec3 spec_albedo = max(SpecularAlbedo(surf), vec3(MIN_DEMODULATE));
@@ -607,7 +607,7 @@ void main()
 	imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
 	imageStore(img_albedo[1], pixel, vec4(ks, surf.roughness));
-	if (fr.size.w != 0)
+	if (F_EXPORT != 0)
 	{
 		// for export: see pt.h's PT_PLANE_
 		const vec3 given = ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front) ? Emitted(surf, true) : vec3(0.0);

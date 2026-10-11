@@ -6,6 +6,41 @@
 // backend (pt/cpu/pt_trace.cpp) function for function, so that the two make
 // the same picture.
 
+// Parts of the tracer a host may have no use for. Each is off when the frame
+// says so, but the card still pays for it in every ray: what a shader might
+// do it has to be ready to do. Built with glslc -DPT_NO_WATER, -DPT_NO_FOG,
+// -DPT_NO_BLUR or -DPT_NO_EXPORT the part is not there at all, and what the
+// frame says of it is not heeded. The picture is the one a frame with the
+// part off makes.
+#ifdef PT_NO_WATER
+#define F_WATERS		0		// simulated liquids
+#define F_WAVE_STRENGTH	0.0
+#define F_WAVE_REACH	0.0
+#define F_WATER_SHAFTS	0.0
+#define F_WATER_WET		0.0
+#else
+#define F_WATERS		fr.size.z
+#define F_WAVE_STRENGTH	fr.settings_f.z
+#define F_WAVE_REACH	fr.liquid.x
+#define F_WATER_SHAFTS	fr.liquid.z
+#define F_WATER_WET		fr.liquid.w
+#endif
+#ifdef PT_NO_FOG
+#define F_FOG			0.0		// air that scatters light
+#else
+#define F_FOG			fr.settings_f.w
+#endif
+#ifdef PT_NO_BLUR
+#define F_BLUR			0.0		// motion blur
+#else
+#define F_BLUR			fr.open_origin.w
+#endif
+#ifdef PT_NO_EXPORT
+#define F_EXPORT		0		// the planes of pt.h's PT_PLANE_
+#else
+#define F_EXPORT		fr.size.w
+#endif
+
 // same values as PT_MAT_* in pt.h
 const uint MAT_SKY = 1u;
 const uint MAT_ALPHA_TEST = 2u;
@@ -249,7 +284,7 @@ float GatheredVariance(int k, ivec2 q, float frames)
 		frames = imageLoad(img_kept[now * 3], q).a;
 		// the air's light, where it has the layer channel to itself, is
 		// kept for fewer frames while things change: see temporal.comp
-		if (k == 2 && fr.output_f.w == 0.0 && fr.settings_f.w > 0.0)
+		if (k == 2 && fr.output_f.w == 0.0 && F_FOG > 0.0)
 			frames = min(frames, max(fr.painted.w, 1.0));
 	}
 	return VarianceOf(imageLoad(img_moments[now * 3 + k], q).xy, frames);
@@ -528,7 +563,7 @@ float WaveHeight(int map, vec4 rect, ivec2 size, vec2 xy)
 	const vec2 a = f - vec2(at);
 	const float h = mix(mix(StoredHeight(at, map), StoredHeight(at + ivec2(1, 0), map), a.x),
 		mix(StoredHeight(at + ivec2(0, 1), map), StoredHeight(at + ivec2(1, 1), map), a.x), a.y);
-	return (h * (1.0 / 65535.0) - 0.5) * 16.0 * fr.settings_f.z;
+	return (h * (1.0 / 65535.0) - 0.5) * 16.0 * F_WAVE_STRENGTH;
 }
 
 // Where the ray first crosses the surface of a simulated liquid before limit.
@@ -545,9 +580,9 @@ bool WaveCross(vec3 origin, vec3 dir, float tmin, float limit, out float where, 
 	level = 0.0;
 	map = -1;
 	const vec3 inv = 1.0 / mix(dir, vec3(1.0e-8), lessThan(abs(dir), vec3(1.0e-8)));
-	const float reach = fr.liquid.x * fr.settings_f.z + 0.1;
+	const float reach = F_WAVE_REACH * F_WAVE_STRENGTH + 0.1;
 	limit = min(limit, 1.0e7);
-	for (int i = 0; i < fr.size.z; i++)
+	for (int i = 0; i < F_WATERS; i++)
 	{
 		// the part of the ray within the waves' reach of the level, over the body
 		const float z = fr.water_at[i].x;
@@ -620,7 +655,7 @@ bool WaveCross(vec3 origin, vec3 dir, float tmin, float limit, out float where, 
 // its level is behind the level sheet, and must not meet that from the back.
 bool BehindSheet(Hit hit, vec3 dir)
 {
-	if (hit.moving || fr.settings_f.z <= 0.0)
+	if (hit.moving || F_WAVE_STRENGTH <= 0.0)
 		return false;
 	const vec3 p0 = Corner(false, hit.tri, 0);
 	return dot(cross(Corner(false, hit.tri, 1) - p0, Corner(false, hit.tri, 2) - p0), dir) > 0.0;
@@ -632,7 +667,7 @@ bool BehindSheet(Hit hit, vec3 dir)
 bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_through, uint mask, bool waves, out Hit hit, out Material mat)
 {
 	rays_traced++;
-	const bool swell = waves && fr.size.z > 0 && fr.settings_f.z > 0.0;
+	const bool swell = waves && F_WATERS > 0 && F_WAVE_STRENGTH > 0.0;
 	for (int skips = 0; ; skips++)
 	{
 		// One search a turn, so that there is one of them here and no more:
@@ -744,7 +779,7 @@ float Caustic(int map, vec4 rect, vec3 q, float reach, out bool wet)
 	wet = v.a > 0.3;
 	// how sharply it curves along x and along y, and how ruffled it is: see pt_water_caustics
 	const vec2 s = (v.rg * 255.0 - 128.0) * (1.0 / 127.0);
-	const vec3 c = (vec3(s * abs(s) * 0.125, 0.0) + RippleCurve(q.xy) * (v.b * 4.0)) * (reach * fr.settings_f.z);
+	const vec3 c = (vec3(s * abs(s) * 0.125, 0.0) + RippleCurve(q.xy) * (v.b * 4.0)) * (reach * F_WAVE_STRENGTH);
 	return clamp(1.0 / max(abs((1.0 + c.x) * (1.0 + c.y) - c.z * c.z), 0.01), 0.2, CAUSTIC_MAX);
 }
 
@@ -779,7 +814,7 @@ bool Bend(vec3 p, vec3 target, out vec3 q, out float through)
 {
 	q = vec3(0.0);
 	through = 1.0;
-	for (int i = 0; i < fr.size.z; i++)
+	for (int i = 0; i < F_WATERS; i++)
 	{
 		const float z = fr.water_at[i].x;
 		if ((p.z - z) * (target.z - z) >= 0.0)
@@ -1013,7 +1048,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	uv += mat.scroll * fr.sky_misc.w;
 
 	// a simulated surface: the wave picture holds its slopes and height
-	const float wave_strength = fr.settings_f.z;
+	const float wave_strength = F_WAVE_STRENGTH;
 	const bool simulated = mat.wave_map >= 0 && wave_strength > 0.0;
 	vec2 wave = vec2(0.0);
 	float wave_height = 0.0;
@@ -1160,7 +1195,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 // thin and still shines a little where it is not. Bubbles do not lie flat.
 void AddFroth(inout Surface s)
 {
-	if (s.mat.foam_map < 0 || s.mat.wave_map < 0 || fr.settings_f.z <= 0.0)
+	if (s.mat.foam_map < 0 || s.mat.wave_map < 0 || F_WAVE_STRENGTH <= 0.0)
 		return;
 	const vec4 foam = Texel(s.mat.foam_map, (s.p.xy - s.mat.wave_rect.xy) * s.mat.wave_rect.zw, true);
 	const float froth = Froth(s.p.xy, foam);
@@ -1209,9 +1244,9 @@ vec3 Lamp(int body, vec2 xy)
 // further: darker, and shiny.
 void AddWater(inout Surface s, bool under)
 {
-	if (fr.settings_f.z <= 0.0)
+	if (F_WAVE_STRENGTH <= 0.0)
 		return;
-	for (int i = 0; i < fr.size.z; i++)
+	for (int i = 0; i < F_WATERS; i++)
 	{
 		const float level = fr.water_at[i].x, up = s.p.z - level;
 		const vec4 rect = fr.water_rect[i];
@@ -1258,13 +1293,13 @@ void AddWater(inout Surface s, bool under)
 				s.kd *= mix(1.0, gain, facing);
 			return;
 		}
-		if (fr.liquid.w <= 0.0)
+		if (F_WATER_WET <= 0.0)
 			continue;
 
-		const float mark = (sum / weight * 255.0 - 160.0) * (8.0 / 95.0) * fr.settings_f.z;
+		const float mark = (sum / weight * 255.0 - 160.0) * (8.0 / 95.0) * F_WAVE_STRENGTH;
 		// it soaks a little higher than it stood, and not to a ruled line
 		const float edge = mark + 0.75 + 1.5 * Lumps(vec2(s.p.x + s.p.y, s.p.z + s.p.x - s.p.y) * 0.45);
-		const float wet = clamp((edge - up) * 1.5, 0.0, 1.0) * min(fr.liquid.w, 1.0);
+		const float wet = clamp((edge - up) * 1.5, 0.0, 1.0) * min(F_WATER_WET, 1.0);
 		if (wet <= 0.0)
 			continue;
 
@@ -1420,7 +1455,7 @@ void WaterBounce(Surface s, vec3 y, vec3 e, inout Lit lit)
 	int body = -1;
 	float z = -1.0e30;
 	vec3 q = vec3(0.0);		// where the path meets the surface
-	for (int i = 0; i < fr.size.z; i++)
+	for (int i = 0; i < F_WATERS; i++)
 	{
 		const float level = fr.water_at[i].x;
 		if (fr.water_at[i].y < 0.0 || s.p.z <= level + 1.0 || y.z <= level + 1.0 || s.p.z - level > 512.0 || level <= z)
@@ -1615,14 +1650,14 @@ Lit DirectLights(Surface s, bool first_hit)
 	vec3 crossing = vec3(0.0);
 	float gets_in = 1.0;
 	bool bent = false;
-	if (first_hit && fr.size.z > 0)
+	if (first_hit && F_WATERS > 0)
 		bent = Bend(Leave(s), chosen_y, crossing, gets_in);
 
 	Lit lit = none;
 	const float clear = (chosen_free ? 1.0 : Visible(Leave(s), chosen_y, bent, crossing)) * gets_in;
 	if (clear > 0.0)
 		lit = Reflect(s, chosen_wi, chosen_e * clear);
-	if (fr.size.z > 0)
+	if (F_WATERS > 0)
 		WaterBounce(s, chosen_y, chosen_e, lit);
 	return lit;
 }

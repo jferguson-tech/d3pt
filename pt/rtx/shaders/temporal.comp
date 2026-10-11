@@ -51,6 +51,26 @@ bool WasAt(vec3 p, out vec2 at)
 	return true;
 }
 
+// What the spatial filter starts from, where it is to run: the light
+// gathered in channel k and how unsure it still is, as each of its passes
+// leaves them for the next. The filter's first pass used to work the second
+// out for itself at every tap, from two pictures more than its other passes
+// read, and took three times as long as they do. frames: how many stand
+// behind the channel, none if it goes by the surface's (see
+// GatheredVariance, which this is).
+void StoreForFilter(ivec2 pixel, int k, vec3 gathered, vec2 moments, float frames, float surface_frames)
+{
+	if (fr.output_i.y <= 0)
+		return;
+	if (frames <= 0.0)
+	{
+		frames = surface_frames;
+		if (k == 2 && fr.output_f.w == 0.0 && F_FOG > 0.0)
+			frames = min(frames, max(fr.painted.w, 1.0));
+	}
+	imageStore(img_filter[3 + k], pixel, vec4(gathered, sqrt(VarianceOf(moments, frames))));
+}
+
 // the weight of tap t of the four around a point at f
 float TapWeight(vec2 f, ivec2 corner, int t)
 {
@@ -85,6 +105,7 @@ void main()
 		{
 			imageStore(img_kept[now * 3 + k], pixel, vec4(light[k], 0.0));
 			imageStore(img_moments[now * 3 + k], pixel, vec4(moments[k], 0.0, 0.0));
+			StoreForFilter(pixel, k, light[k], moments[k], 0.0, 0.0);
 		}
 		return;
 	}
@@ -200,7 +221,7 @@ void main()
 			// which is not where it is: it keeps less too. Where there
 			// is a layer in front, its light is in with the air's and
 			// is followed in its own way below.
-			if (k == 2 && !still && fr.settings_f.w > 0.0 && imageLoad(img_over, pixel).w == 0.0)
+			if (k == 2 && !still && F_FOG > 0.0 && imageLoad(img_over, pixel).w == 0.0)
 				keep = min(kept_frames, max(fr.painted.w, 1.0));
 			light[k] = mix(hist[k], light[k], 1.0 / keep);
 			moments[k] = mix(hist_moments[k], moments[k], 1.0 / keep);
@@ -299,5 +320,8 @@ void main()
 	imageStore(img_kept[now * 3 + 1], pixel, vec4(light[1], spec_frames));
 	imageStore(img_kept[now * 3 + 2], pixel, vec4(light[2], over_frames));
 	for (int k = 0; k < 3; k++)
+	{
 		imageStore(img_moments[now * 3 + k], pixel, vec4(moments[k], 0.0, 0.0));
+		StoreForFilter(pixel, k, light[k], moments[k], k == 0 ? kept_frames : (k == 1 ? spec_frames : over_frames), kept_frames);
+	}
 }
