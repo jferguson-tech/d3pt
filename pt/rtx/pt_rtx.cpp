@@ -181,7 +181,7 @@ const uint32_t kBitEmissive = 1, kBitSampled = 2, kBitSwell = 4;	// GpuMaterial:
 const uint32_t kNumInstances = 5;
 const uint32_t kMaskScene = 1, kMaskHeld = 2;
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 36;
+const uint32_t kNumBindings = 39;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -275,7 +275,8 @@ struct Geometry
 	Buffer		corners;		// 9 floats a triangle
 	Buffer		tris;			// GpuTri
 	Buffer		materials;		// GpuMaterial
-	Buffer		normals;		// 9 floats a triangle; the frame only
+	Buffer		normals;		// 9 floats a triangle
+	Buffer		tangents;		// 18 floats a triangle: at each corner the way u runs, then the way v does
 	Buffer		prev;			// where the corners were last frame; the frame only
 	Accel		solid, glass, held;
 	uint32_t	num_solid = 0, num_glass = 0, num_held = 0;
@@ -453,6 +454,7 @@ struct RtxBackend
 
 	char		device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = "";
 	char		stats[320] = "";
+	int			world_smooth = 0;			// the map came with 1: normals, 2: tangents
 };
 
 // The work done here, timed part by part: LapStart, then Lap after each part
@@ -1486,6 +1488,7 @@ void FreeGeometry(RtxBackend *s, Geometry &g)
 	FreeBuffer(s, g.tris);
 	FreeBuffer(s, g.materials);
 	FreeBuffer(s, g.normals);
+	FreeBuffer(s, g.tangents);
 	FreeBuffer(s, g.prev);
 	FreeAccel(s, g.solid);
 	FreeAccel(s, g.glass);
@@ -1505,6 +1508,7 @@ bool Reserve(RtxBackend *s, Geometry &g, uint32_t tris, uint32_t materials, VkBu
 		FreeBuffer(s, g.corners);
 		FreeBuffer(s, g.tris);
 		FreeBuffer(s, g.normals);
+		FreeBuffer(s, g.tangents);
 		FreeBuffer(s, g.prev);
 		// what changes every frame is given room to spare, so that it is not
 		// made again for every triangle more
@@ -1513,8 +1517,9 @@ bool Reserve(RtxBackend *s, Geometry &g, uint32_t tris, uint32_t materials, VkBu
 		g.corners = MakeBuffer(s, floats,
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true);
 		g.tris = MakeBuffer(s, (VkDeviceSize)g.room_tris * sizeof(GpuTri), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-		// only what moves has normals of its own and a place it was before
-		g.normals = MakeBuffer(s, grows ? floats : 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		g.normals = MakeBuffer(s, floats, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		g.tangents = MakeBuffer(s, floats * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		// only what moves has a place it was before
 		g.prev = MakeBuffer(s, grows ? floats : 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
 		// either part may turn out to be all of it
 		MakeAccel(s, g.solid, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
@@ -1644,6 +1649,9 @@ void ShowBuffers(RtxBackend *s)
 	WriteBuffer(s, 15, s->frame.normals);
 	WriteBuffer(s, 16, s->frame.prev);
 	WriteBuffer(s, 25, s->meter);
+	WriteBuffer(s, 36, s->world.normals);
+	WriteBuffer(s, 37, s->world.tangents);
+	WriteBuffer(s, 38, s->frame.tangents);
 }
 
 // ------------------------------------------------- the pictures in between
@@ -1834,6 +1842,7 @@ void CreateScene(RtxBackend *s)
 	bind[33].descriptorCount = 2;
 	bind[34].descriptorCount = 4;
 	bind[35].descriptorCount = 4;
+	bind[36].descriptorType = bind[37].descriptorType = bind[38].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;
@@ -1843,7 +1852,7 @@ void CreateScene(RtxBackend *s)
 	const VkDescriptorPoolSize sizes[] = {
 		{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
 		{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16},
+		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24},
 		{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxTextures},
 		{VK_DESCRIPTOR_TYPE_SAMPLER, 2},
 		{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kNumTargets},
@@ -2094,6 +2103,9 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 			place[t] = next++;
 
 	float *corners = static_cast<float *>(s->world.corners.ptr);
+	float *normals = static_cast<float *>(s->world.normals.ptr);
+	float *tangents = static_cast<float *>(s->world.tangents.ptr);
+	s->world_smooth = (in->normals ? 1 : 0) | (in->tangents ? 2 : 0);
 	GpuTri *tris = static_cast<GpuTri *>(s->world.tris.ptr);
 	for (uint32_t t = 0; t < num_tris; t++)
 	{
@@ -2104,6 +2116,10 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		{
 			const uint32_t v = in->indices[t * 3 + k];
 			memcpy(&corners[place[t] * 9 + k * 3], &in->positions[v * 3], 12);
+			if (in->normals)
+				memcpy(&normals[place[t] * 9 + k * 3], &in->normals[v * 3], 12);
+			if (in->tangents)
+				memcpy(&tangents[place[t] * 18 + k * 6], &in->tangents[v * 6], 24);
 			out.uv[k * 2] = in->uvs ? in->uvs[v * 2] : 0.0f;
 			out.uv[k * 2 + 1] = in->uvs ? in->uvs[v * 2 + 1] : 0.0f;
 		}
@@ -2558,6 +2574,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 		float *corners = static_cast<float *>(s->frame.corners.ptr);
 		float *normals = static_cast<float *>(s->frame.normals.ptr);
 		float *prev = static_cast<float *>(s->frame.prev.ptr);
+		float *frame_tangents = static_cast<float *>(s->frame.tangents.ptr);
 		GpuTri *tris = static_cast<GpuTri *>(s->frame.tris.ptr);
 
 		// (only with motion blur, which is what keeping them apart is for;
@@ -2590,6 +2607,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 			memcpy(&corners[to * 9], &scene->positions[t * 9], (size_t)count * 36);
 			if (scene->normals)
 				memcpy(&normals[to * 9], &scene->normals[t * 9], (size_t)count * 36);
+			if (scene->tangents)
+				memcpy(&frame_tangents[to * 18], &scene->tangents[t * 18], (size_t)count * 72);
 			if (scene->prev_positions)
 				memcpy(&prev[to * 9], &scene->prev_positions[t * 9], (size_t)count * 36);
 			for (uint32_t i = 0; i < count; i++)
@@ -2703,6 +2722,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.held[0] = (int32_t)(num_solid + s->frame.num_glass);
 	f.held[1] = (int32_t)num_held;
 	f.held[2] = view->reflection_history ? 1 : 0;
+	f.held[3] = s->world_smooth;
 	const bool same_camera = s->has_history && !memcmp(f.origin, s->camera, sizeof(s->camera));
 	// What is done about noise: 2, all there is; 1, nothing, but frames add up
 	// while the eye is at rest; 0, nothing. Without the first there is nothing
@@ -2863,7 +2883,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.output_f[3] = still ? 1.0f : 0.0f;
 
 	s->parity ^= 1;
-	f.frame_has[0] = (scene && scene->normals) ? 1 : 0;
+	f.frame_has[0] = ((scene && scene->normals) ? 1 : 0) | ((scene && scene->tangents) ? 2 : 0);
 	f.frame_has[1] = (scene && scene->prev_positions) ? 1 : 0;
 	f.frame_has[2] = s->parity;
 	f.frame_has[3] = (view->antialias && !view->debug && filtering == 2) ? 1 : 0;

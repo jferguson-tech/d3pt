@@ -224,6 +224,14 @@ typedef struct pt_world_s
 
 	const float			*positions;			/* 3 per vertex */
 	const float			*uvs;				/* 2 per vertex, 1.0 = one texture repeat */
+	const float			*normals;			/* 3 per vertex, or NULL for flat shading */
+	const float			*tangents;			/* 6 per vertex, or NULL: the way u runs across
+											   the surface there and the way v does, as the
+											   normal maps were made for. Without them the
+											   two are worked out for each triangle from its
+											   corners, which shows the triangles wherever a
+											   normal map was made for a smooth surface.
+											   RTX backend only, as normals are here */
 	int					num_vertices;
 	const uint32_t		*indices;			/* 3 per triangle */
 	const uint32_t		*tri_materials;		/* 1 per triangle */
@@ -256,6 +264,8 @@ typedef struct pt_scene_s
 	const float			*positions;			/* 9 per triangle */
 	const float			*uvs;				/* 6 per triangle */
 	const float			*normals;			/* 9 per triangle, or NULL for flat shading */
+	const float			*tangents;			/* 18 per triangle, or NULL: for each corner the
+											   way u runs and the way v does; see pt_world_t */
 	const float			*prev_positions;		/* 9 per triangle: where it was last frame; NULL
 											   if nothing is known to have moved */
 	const uint32_t		*tri_materials;		/* 1 per triangle */

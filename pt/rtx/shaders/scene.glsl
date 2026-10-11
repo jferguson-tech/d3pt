@@ -203,6 +203,12 @@ layout(std430, set = 0, binding = 13) readonly buffer Tables { float v[]; } tabl
 layout(std430, set = 0, binding = 14) readonly buffer Indices { uint v[]; } indices;
 layout(std430, set = 0, binding = 15) readonly buffer FrameNormals { float v[]; } frame_normals;
 layout(std430, set = 0, binding = 16) readonly buffer FramePrev { float v[]; } frame_prev;
+// the map's normals, 9 floats a triangle as the frame's are, and for each of
+// the two the tangents: 18 floats a triangle, at each corner the way u runs
+// across the surface and then the way v does
+layout(std430, set = 0, binding = 36) readonly buffer WorldNormals { float v[]; } world_normals;
+layout(std430, set = 0, binding = 37) readonly buffer WorldTangents { float v[]; } world_tangents;
+layout(std430, set = 0, binding = 38) readonly buffer FrameTangents { float v[]; } frame_tangents;
 
 // Per pixel, at the size the picture is traced at. Where there are two of
 // something, one is this frame's and the other the last one's, in turn.
@@ -401,6 +407,34 @@ int PlaceInCell(int sorted, int count, uint li)
 }
 
 // ------------------------------------------------------------ the scene
+
+// a triangle's normal at a point of it, from those of its corners; not of unit length
+vec3 SmoothNormal(bool moving, int tri, vec2 bary)
+{
+	const int i = tri * 9;
+	const float a = 1.0 - bary.x - bary.y;
+	if (moving)
+		return vec3(frame_normals.v[i], frame_normals.v[i + 1], frame_normals.v[i + 2]) * a
+			+ vec3(frame_normals.v[i + 3], frame_normals.v[i + 4], frame_normals.v[i + 5]) * bary.x
+			+ vec3(frame_normals.v[i + 6], frame_normals.v[i + 7], frame_normals.v[i + 8]) * bary.y;
+	return vec3(world_normals.v[i], world_normals.v[i + 1], world_normals.v[i + 2]) * a
+		+ vec3(world_normals.v[i + 3], world_normals.v[i + 4], world_normals.v[i + 5]) * bary.x
+		+ vec3(world_normals.v[i + 6], world_normals.v[i + 7], world_normals.v[i + 8]) * bary.y;
+}
+
+// the same of one of its tangents: which 0, the way u runs; 1, the way v does
+vec3 SmoothTangent(bool moving, int tri, vec2 bary, int which)
+{
+	const int i = tri * 18 + which * 3;
+	const float a = 1.0 - bary.x - bary.y;
+	if (moving)
+		return vec3(frame_tangents.v[i], frame_tangents.v[i + 1], frame_tangents.v[i + 2]) * a
+			+ vec3(frame_tangents.v[i + 6], frame_tangents.v[i + 7], frame_tangents.v[i + 8]) * bary.x
+			+ vec3(frame_tangents.v[i + 12], frame_tangents.v[i + 13], frame_tangents.v[i + 14]) * bary.y;
+	return vec3(world_tangents.v[i], world_tangents.v[i + 1], world_tangents.v[i + 2]) * a
+		+ vec3(world_tangents.v[i + 6], world_tangents.v[i + 7], world_tangents.v[i + 8]) * bary.x
+		+ vec3(world_tangents.v[i + 12], world_tangents.v[i + 13], world_tangents.v[i + 14]) * bary.y;
+}
 
 vec3 Corner(bool moving, int tri, int k)
 {
@@ -1068,18 +1102,17 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	s.roughness = mat.roughness;
 	float metallic = mat.emission_per_texel.a;
 
+	// the normals and tangents the host gave: 1 normals, 2 tangents
+	const int smooth_has = hit.moving ? fr.frame_has.x : fr.held.w;
 	vec3 n = s.ng;
-	if (hit.moving && fr.frame_has.x != 0)
+	if ((smooth_has & 1) != 0)
 	{
-		const int i = hit.tri * 9;
-		const vec3 n0 = vec3(frame_normals.v[i], frame_normals.v[i + 1], frame_normals.v[i + 2]);
-		const vec3 n1 = vec3(frame_normals.v[i + 3], frame_normals.v[i + 4], frame_normals.v[i + 5]);
-		const vec3 n2 = vec3(frame_normals.v[i + 6], frame_normals.v[i + 7], frame_normals.v[i + 8]);
-		const vec3 sum = n0 * (1.0 - hit.bary.x - hit.bary.y) + n1 * hit.bary.x + n2 * hit.bary.y;
+		const vec3 sum = SmoothNormal(hit.moving, hit.tri, hit.bary);
 		if (dot(sum, sum) > 1.0e-8)
 		{
+			// on the side the ray came from, whichever way round the triangle is
 			n = normalize(sum);
-			if (!s.front)
+			if (dot(n, s.ng) < 0.0)
 				n = -n;
 		}
 	}
@@ -1090,7 +1123,26 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		const vec2 d1 = tri.uv1 - tri.uv0, d2 = tri.uv2 - tri.uv0;
 		const float det = d1.x * d2.y - d2.x * d1.y;
 		vec3 tu, tv;
-		if (abs(det) > 1.0e-12)
+		// The host's tangents, where it gave them: the map was made with
+		// them, corner by corner, and a normal map made for a smooth surface
+		// only comes out smooth through the same. Worked out for each
+		// triangle from its own corners, as below, they turn at every edge
+		// and every triangle of a rounded thing shows.
+		bool given = false;
+		if ((smooth_has & 2) != 0)
+		{
+			tu = SmoothTangent(hit.moving, hit.tri, hit.bary, 0);
+			tv = SmoothTangent(hit.moving, hit.tri, hit.bary, 1);
+			given = dot(tu, tu) > 1.0e-8 && dot(tv, tv) > 1.0e-8;
+			if (given)
+			{
+				tu = normalize(tu);
+				tv = normalize(tv);
+			}
+		}
+		if (given)
+			;
+		else if (abs(det) > 1.0e-12)
 		{
 			tu = normalize(e1 * d2.y - e2 * d1.y) * (det < 0.0 ? -1.0 : 1.0);
 			tv = normalize(e2 * d1.x - e1 * d2.x) * (det < 0.0 ? -1.0 : 1.0);
@@ -1134,8 +1186,13 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		Basis(n, t1, t2);
 		n = normalize(n + t1 * (a * 0.02 * wave_strength) + t2 * (b * 0.02 * wave_strength));
 	}
-	// a normal tilted away from the viewer is no use for shading
-	if (dot(n, s.wo) < 0.02 || dot(n, s.ng) <= 0.0)
+	// A normal tilted away from the viewer is no use for shading. It is
+	// turned back towards the viewer just as far as it needs to be: put
+	// back to the triangle's own, every triangle of a rounded thing showed
+	// where it was seen edge on.
+	if (dot(n, s.ng) > 0.0 && dot(n, s.wo) < 0.02)
+		n = normalize(n + s.wo * (0.02 - dot(n, s.wo)));
+	if (dot(n, s.wo) < 0.0 || dot(n, s.ng) <= 0.0)
 		n = s.ng;
 	s.n = n;
 
