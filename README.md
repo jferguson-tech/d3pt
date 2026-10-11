@@ -135,6 +135,16 @@ OpenGL driver that can open another API's picture
 (`GL_EXT_memory_object_win32`). Without them the game says so in the console
 and draws with OpenGL.
 
+Any shape of screen: the view is as wide as the window or screen is, and
+the menus and the HUD keep their 4:3 shape in the middle of it
+(`r_guiAspect 0` stretches them). The game's own menu lists only 4:3 sizes;
+for others:
+
+    Doom3.exe +set r_mode -2 +set r_fullscreen 1
+    Doom3.exe +set r_mode -1 +set r_customWidth 2560 +set r_customHeight 1080 +set r_fullscreen 0
+
+`r_mode -2` is the size of the desktop.
+
 Doom 3 will not start while another copy of it is running.
 
 ## License

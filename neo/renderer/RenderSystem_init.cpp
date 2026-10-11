@@ -48,7 +48,9 @@ idCVar r_inhibitFragmentProgram( "r_inhibitFragmentProgram", "0", CVAR_RENDERER 
 idCVar r_glDriver( "r_glDriver", "", CVAR_RENDERER, "\"opengl32\", etc." );
 idCVar r_useLightPortalFlow( "r_useLightPortalFlow", "1", CVAR_RENDERER | CVAR_BOOL, "use a more precise area reference determination" );
 idCVar r_multiSamples( "r_multiSamples", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "number of antialiasing samples" );
-idCVar r_mode( "r_mode", "3", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_INTEGER, "video mode number" );
+idCVar r_mode( "r_mode", "3", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_INTEGER, "video mode number; -1: r_customWidth by r_customHeight; -2: the size of the desktop" );
+idCVar r_guiAspect( "r_guiAspect", "1", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_BOOL, "on a screen wider than 4:3 the menus and the HUD keep their shape, in the middle of it; 0: they are stretched to its width" );
+idCVar r_guiAspectNow( "r_guiAspectNow", "0", CVAR_RENDERER | CVAR_BOOL, "set while a menu or the HUD is drawn: what is drawn in 640 by 480 keeps its shape (see r_guiAspect)" );
 idCVar r_displayRefresh( "r_displayRefresh", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_NOCHEAT, "optional display refresh rate option for vid mode", 0.0f, 200.0f );
 idCVar r_fullscreen( "r_fullscreen", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "0 = windowed, 1 = full screen" );
 idCVar r_customWidth( "r_customWidth", "720", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "custom screen width. set r_mode to -1 to activate" );
@@ -573,6 +575,20 @@ static bool R_GetModeInfo( int *width, int *height, int mode ) {
 #endif
 	vidmode_t	*vm;
 
+#ifdef _WIN32
+	if ( mode == -2 ) {
+		// the desktop's own size, whatever shape it is
+		DEVMODE dm;
+		memset( &dm, 0, sizeof( dm ) );
+		dm.dmSize = sizeof( dm );
+		if ( !EnumDisplaySettings( NULL, ENUM_CURRENT_SETTINGS, &dm ) ) {
+			return false;
+		}
+		*width = dm.dmPelsWidth;
+		*height = dm.dmPelsHeight;
+		return true;
+	}
+#endif
     if ( mode < -1 ) {
         return false;
 	}

@@ -470,7 +470,11 @@ void idPlayerView::SingleView( idUserInterface *hud, const renderView_t *view ) 
 
 	// if the objective system is up, don't do normal drawing
 	if ( player->objectiveSystemOpen ) {
+		renderSystem->SetColor4( 0.0f, 0.0f, 0.0f, 1.0f );
+		renderSystem->DrawStretchPic( 0.0f, 0.0f, 640.0f, 480.0f, 0.0f, 0.0f, 1.0f, 1.0f, declManager->FindMaterial( "_white" ) );
+		cvarSystem->SetCVarBool( "r_guiAspectNow", true );
 		player->objectiveSystem->Redraw( gameLocal.fast.time );
+		cvarSystem->SetCVarBool( "r_guiAspectNow", false );
 		return;
 	}
 

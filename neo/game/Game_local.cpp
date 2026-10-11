@@ -2396,25 +2396,16 @@ void idGameLocal::CalcFov( float base_fov, float &fov_x, float &fov_y ) const {
 		Error( "idGameLocal::CalcFov: bad result" );
 	}
 
-	switch( r_aspectRatio.GetInteger() ) {
-	default :
-	case 0 :
-		// 4:3
+	// The shape of what it is drawn in, whatever that is: 16:9, 21:9, 32:9.
+	// The view is as tall as it is at 4:3 and as much wider as the screen is.
+	// (r_aspectRatio chose between three shapes, and had to be set by hand to
+	// match the screen.)
+	ratio_x = (float) renderSystem->GetScreenWidth();
+	ratio_y = (float) renderSystem->GetScreenHeight();
+	if ( ratio_x <= 0.0f || ratio_y <= 0.0f || ratio_x * 3.0f <= ratio_y * 4.0f * 1.01f ) {
+		// 4:3, or narrower
 		fov_x = base_fov;
 		return;
-		break;
-
-	case 1 :
-		// 16:9
-		ratio_x = 16.0f;
-		ratio_y = 9.0f;
-		break;
-
-	case 2 :
-		// 16:10
-		ratio_x = 16.0f;
-		ratio_y = 10.0f;
-		break;
 	}
 
 	y = ratio_y / tan( fov_y / 360.0f * idMath::PI );

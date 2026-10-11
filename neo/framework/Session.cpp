@@ -2407,25 +2407,41 @@ idSessionLocal::Draw
 void idSessionLocal::Draw() {
 	bool fullConsole = false;
 
+	// (menus keep their shape on a screen wider than 4:3: see r_guiAspect)
 	if ( insideExecuteMapChange ) {
+		renderSystem->SetColor( colorBlack );
+		renderSystem->DrawStretchPic( 0, 0, 640, 480, 0, 0, 1, 1, declManager->FindMaterial( "_white" ) );
+		cvarSystem->SetCVarBool( "r_guiAspectNow", true );
 		if ( guiLoading ) {
 			guiLoading->Redraw( com_frameTime );
 		}
 		if ( guiActive == guiMsg ) {
 			guiMsg->Redraw( com_frameTime );
-		} 
+		}
+		cvarSystem->SetCVarBool( "r_guiAspectNow", false );
 	} else if ( guiTest ) {
 		// if testing a gui, clear the screen and draw it
 		// clear the background, in case the tested gui is transparent
 		// NOTE that you can't use this for aviGame recording, it will tick at real com_frameTime between screenshots..
 		renderSystem->SetColor( colorBlack );
 		renderSystem->DrawStretchPic( 0, 0, 640, 480, 0, 0, 1, 1, declManager->FindMaterial( "_white" ) );
+		cvarSystem->SetCVarBool( "r_guiAspectNow", true );
 		guiTest->Redraw( com_frameTime );
+		cvarSystem->SetCVarBool( "r_guiAspectNow", false );
 	} else if ( guiActive && !guiActive->State().GetBool( "gameDraw" ) ) {
 		
+		// what is under it: the game, or black out to the sides of the screen
+		const bool overGame = ( guiActive == guiTakeNotes || guiActive == guiPathTrace ) && !com_skipGameDraw.GetBool();
+		if ( !overGame ) {
+			renderSystem->SetColor( colorBlack );
+			renderSystem->DrawStretchPic( 0, 0, 640, 480, 0, 0, 1, 1, declManager->FindMaterial( "_white" ) );
+		}
+
 		// draw the frozen gui in the background
 		if ( guiActive == guiMsg && guiMsgRestore ) {
+			cvarSystem->SetCVarBool( "r_guiAspectNow", true );
 			guiMsgRestore->Redraw( com_frameTime );
+			cvarSystem->SetCVarBool( "r_guiAspectNow", false );
 		}
 		
 		// draw the menus full screen
@@ -2433,7 +2449,9 @@ void idSessionLocal::Draw() {
 			game->Draw( GetLocalClientNum() );
 		}
 
+		cvarSystem->SetCVarBool( "r_guiAspectNow", true );
 		guiActive->Redraw( com_frameTime );
+		cvarSystem->SetCVarBool( "r_guiAspectNow", false );
 	} else if ( readDemo ) {
 		rw->RenderScene( &currentDemoRenderView );
 		renderSystem->DrawDemoPics();
