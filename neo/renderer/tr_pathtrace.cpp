@@ -176,6 +176,7 @@ static struct {
 	idList<float>			positions;			// 9 per triangle
 	idList<float>			uvs;				// 6
 	idList<float>			normals;			// 9
+	idList<float>			tangents;			// 18: at each corner the way u runs, then the way v does
 	idList<float>			prevPositions;		// 9: where it was in the view before
 	idList<unsigned int>	triMaterials;		// an index into moving
 	idList<ptSpan_t>		spans, prevSpans;	// whose triangles are where
@@ -203,6 +204,8 @@ typedef struct {
 	idList<bool>				noShadows;		// and whether it is for a model that casts no shadow
 	idList<float>				positions;
 	idList<float>				uvs;
+	idList<float>				normals;		// 3 a vertex
+	idList<float>				tangents;		// 6 a vertex
 	idList<unsigned int>		indices;
 	idList<unsigned int>		triMaterials;
 	idList<pt_point_light_t>	lights;
@@ -237,6 +240,7 @@ void PT_Shutdown( void ) {
 	pt.positions.Clear();
 	pt.uvs.Clear();
 	pt.normals.Clear();
+	pt.tangents.Clear();
 	pt.prevPositions.Clear();
 	pt.triMaterials.Clear();
 	pt.spans.Clear();
@@ -752,7 +756,7 @@ static void PT_AddModel( ptWorldBuild_t &build, const idRenderEntityLocal *def )
 
 	for ( i = 0; i < model->NumSurfaces(); i++ ) {
 		const modelSurface_t	*surf = model->Surface( i );
-		const srfTriangles_t	*tri = surf->geometry;
+		srfTriangles_t			*tri = surf->geometry;
 
 		if ( !tri || tri->numVerts <= 0 || tri->numIndexes < 3 || !tri->verts || !tri->indexes ) {
 			continue;
@@ -762,15 +766,29 @@ static void PT_AddModel( ptWorldBuild_t &build, const idRenderEntityLocal *def )
 		if ( material < 0 ) {
 			continue;
 		}
+		if ( !tri->tangentsCalculated ) {
+			R_DeriveTangents( tri );		// (the game works them out when a surface is first lit)
+		}
 
+		// with each vertex its normal and its two tangents, as the game has them: its normal maps were made for these
 		const unsigned int first = build.positions.Num() / 3;
 		for ( j = 0; j < tri->numVerts; j++ ) {
-			const idVec3 p = def->parms.origin + tri->verts[j].xyz * def->parms.axis;
+			const idDrawVert	&v = tri->verts[j];
+			const idVec3		p = def->parms.origin + v.xyz * def->parms.axis;
+			const idVec3		along[3] = { v.normal * def->parms.axis, v.tangents[0] * def->parms.axis, v.tangents[1] * def->parms.axis };
 			build.positions.Append( p.x );
 			build.positions.Append( p.y );
 			build.positions.Append( p.z );
-			build.uvs.Append( tri->verts[j].st.x );
-			build.uvs.Append( tri->verts[j].st.y );
+			build.uvs.Append( v.st.x );
+			build.uvs.Append( v.st.y );
+			build.normals.Append( along[0].x );
+			build.normals.Append( along[0].y );
+			build.normals.Append( along[0].z );
+			for ( int k = 1; k < 3; k++ ) {
+				build.tangents.Append( along[k].x );
+				build.tangents.Append( along[k].y );
+				build.tangents.Append( along[k].z );
+			}
 		}
 		const bool twoSided = shader->GetCullType() == CT_TWO_SIDED;
 		for ( j = 0; j + 2 < tri->numIndexes; j += 3 ) {
@@ -1071,6 +1089,8 @@ static void PT_LoadWorld( const viewDef_t *viewDef ) {
 	w.num_materials = build.materials.Num();
 	w.positions = build.positions.Ptr();
 	w.uvs = build.uvs.Ptr();
+	w.normals = build.normals.Ptr();
+	w.tangents = build.tangents.Ptr();
 	w.num_vertices = build.positions.Num() / 3;
 	w.indices = build.indices.Ptr();
 	w.tri_materials = build.triMaterials.Ptr();
@@ -1220,6 +1240,7 @@ void PT_GatherView( void ) {
 	pt.positions.SetNum( 0, false );
 	pt.uvs.SetNum( 0, false );
 	pt.normals.SetNum( 0, false );
+	pt.tangents.SetNum( 0, false );
 	pt.prevPositions.SetNum( 0, false );
 	pt.triMaterials.SetNum( 0, false );
 	pt.spans.SetNum( 0, false );
@@ -1286,6 +1307,7 @@ void PT_GatherView( void ) {
 
 		const idVec3 &origin = def->parms.origin;
 		const idMat3 &axis = def->parms.axis;
+		const bool unturned = axis.IsIdentity();		// as most of what stands about a map is
 		for ( j = 0; j < model->NumSurfaces(); j++ ) {
 			const modelSurface_t	*surf = model->Surface( j );
 			srfTriangles_t			*tri = surf->geometry;
@@ -1317,9 +1339,10 @@ void PT_GatherView( void ) {
 			PT_Grow( pt.triMaterials, at + numTris );
 			PT_Grow( pt.positions, ( at + numTris ) * 9 );
 			PT_Grow( pt.normals, ( at + numTris ) * 9 );
+			PT_Grow( pt.tangents, ( at + numTris ) * 18 );
 			PT_Grow( pt.uvs, ( at + numTris ) * 6 );
 			for ( k = 0; k < numTris; k++, at++ ) {
-				float *p = &pt.positions[at * 9], *n = &pt.normals[at * 9], *uv = &pt.uvs[at * 6];
+				float *p = &pt.positions[at * 9], *n = &pt.normals[at * 9], *uv = &pt.uvs[at * 6], *tn = &pt.tangents[at * 18];
 
 				pt.triMaterials[at] = material;
 				// the engine's triangles face the other way round from the tracer's
@@ -1332,6 +1355,14 @@ void PT_GatherView( void ) {
 
 					p[c * 3] = xyz.x;		p[c * 3 + 1] = xyz.y;		p[c * 3 + 2] = xyz.z;
 					n[c * 3] = normal.x;	n[c * 3 + 1] = normal.y;	n[c * 3 + 2] = normal.z;
+					// (the same seen from behind: it is the normal that is the other way)
+					if ( unturned ) {
+						memcpy( &tn[c * 6], &v.tangents[0], 6 * sizeof( float ) );
+					} else {
+						const idVec3	tu = v.tangents[0] * axis, tv = v.tangents[1] * axis;
+						tn[c * 6] = tu.x;		tn[c * 6 + 1] = tu.y;		tn[c * 6 + 2] = tu.z;
+						tn[c * 6 + 3] = tv.x;	tn[c * 6 + 4] = tv.y;		tn[c * 6 + 5] = tv.z;
+					}
 					uv[c * 2] = v.st.x;		uv[c * 2 + 1] = v.st.y;
 				}
 			}
@@ -1679,6 +1710,7 @@ bool PT_DrawView( void ) {
 		scene.positions = pt.positions.Ptr();
 		scene.uvs = pt.uvs.Ptr();
 		scene.normals = pt.normals.Ptr();
+		scene.tangents = pt.tangents.Ptr();
 		scene.prev_positions = pt.prevPositions.Ptr();
 		scene.tri_materials = pt.triMaterials.Ptr();
 		scene.num_triangles = pt.triMaterials.Num();
