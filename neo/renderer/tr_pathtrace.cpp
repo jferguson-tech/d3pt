@@ -61,6 +61,14 @@ file is what stands between the two:
   clear pane with a faint tint, which reflects, and bends what is seen
   through it. See PT_IsGlass.
 
+  what OpenGL still draws: the screens of the game's computers, particles,
+  decals, flares and everything else see-through but glass are not light
+  falling on surfaces, they are pictures the game lays over the scene, each
+  blended in a way of its own. They are drawn by OpenGL as they always
+  were, over the traced picture, hidden where the scene hides them. They do
+  not show in what the tracer reflects and they light nothing. See
+  PT_DrawOverlay.
+
 What is not there yet: other translucent surfaces, particles, surfaces the game
 bends as it draws them, and all that the lights' own pictures do.
 
@@ -74,6 +82,8 @@ bends as it draws them, and all that the lights' own pictures do.
 #include "../../pt/include/pt.h"
 
 extern "C" pt_backend_t *pt_rtx_create( const pt_create_t *ci, char *err, int errlen );
+
+int RB_STD_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs );
 
 idCVar r_pathTrace( "r_pathTrace", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "draw 3D views with the path tracer" );
 idCVar r_ptScale( "r_ptScale", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: resolution traced at, as a fraction of the view" );
@@ -92,6 +102,7 @@ idCVar r_ptMaterials( "r_ptMaterials", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARC
 idCVar r_ptSpecular( "r_ptSpecular", "1.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much of the light a surface reflects, for a white texel of its specular map; needs reloadPathTrace" );
 idCVar r_ptGloss( "r_ptGloss", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how rough a surface with a specular map is, 0.05 a mirror to 1; it sets how wide a highlight is; needs reloadPathTrace" );
 idCVar r_ptSky( "r_ptSky", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright the sky is, for a white texel of its pictures; it lights what it shines on; needs reloadPathTrace" );
+idCVar r_ptOverlay( "r_ptOverlay", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: OpenGL draws over the traced view what the tracer leaves out: computer screens, particles, decals, flares" );
 idCVar r_ptTonemap( "r_ptTonemap", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: how light is turned into a picture: 0 filmic, 1 neutral, 2 clipped as the game clips it" );
 idCVar r_ptContrast( "r_ptContrast", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: contrast of the picture, 1 = unchanged" );
 idCVar r_ptSaturation( "r_ptSaturation", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: saturation of the picture, 1 = unchanged" );
@@ -430,6 +441,7 @@ typedef struct {
 	byte	*shine;			// the colour it reflects head on; NULL for none
 	int		shineWidth, shineHeight;
 	bool	glows;			// it is shown unlit
+	bool	screen;			// one of the game's computer screens: OpenGL draws what is on it
 	const idImage *sky;		// it shows the sky: the six pictures of it, and nothing else is read
 	bool	holes;			// base's alpha cuts it out
 	bool	glass;			// a clear pane: base is its tint
@@ -510,6 +522,7 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 	}
 	const shaderStage_t *shown = diffuse ? diffuse : unlit;
 	read.glass = PT_IsGlass( shader );
+	read.screen = shader->HasGui();
 	read.glows = !diffuse && unlit && !read.glass;
 	read.holes = shown && shown->hasAlphaTest && !read.glass;
 	if ( !pictures ) {
@@ -595,6 +608,9 @@ static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int 
 	}
 	if ( read.sky ) {
 		material.flags |= PT_MAT_SKY;
+	}
+	if ( read.screen ) {
+		material.flags |= PT_MAT_BLACK;
 	}
 	if ( read.glows ) {
 		// not lit by the game's lights: it shows as it is painted, so it glows
@@ -1373,6 +1389,31 @@ void PT_ListLights_f( const idCmdArgs &args ) {
 
 /*
 ================
+PT_IsOverlay
+
+Whether a surface of the view is one the tracer leaves out and OpenGL is to
+draw over the traced picture.
+================
+*/
+static bool PT_IsOverlay( const viewDef_t *viewDef, const drawSurf_t *surf ) {
+	const idMaterial *shader = surf->material;
+
+	if ( !shader ) {
+		return false;
+	}
+	// what is on a computer's screen: the game lays it out flat and stands it in the world
+	if ( surf->space != &viewDef->worldSpace && !surf->space->entityDef ) {
+		return true;
+	}
+	// what the game bends as it draws it: flares, sprites
+	if ( shader->Deform() != DFRM_NONE ) {
+		return true;
+	}
+	return shader->Coverage() == MC_TRANSLUCENT && !PT_IsGlass( shader );
+}
+
+/*
+================
 PT_DrawView
 
 Draws the back end's current view with the tracer. Returns false if it could
@@ -1473,6 +1514,18 @@ bool PT_DrawView( void ) {
 	pt.backend->present( pt.backend, pt.overlay.Ptr(), NULL, pt.overlaySent ? 0 : -1 );
 	pt.overlaySent = true;
 
+	// The depth of the scene as OpenGL sees it, which is all it draws of it:
+	// what it lays over the traced picture is hidden where the scene hides it.
+	drawSurf_t	**drawSurfs = (drawSurf_t **) &viewDef->drawSurfs[0];
+	const int	numDrawSurfs = viewDef->numDrawSurfs;
+	const bool	overlay = r_ptOverlay.GetBool() && numDrawSurfs > 0;
+	if ( overlay ) {
+		backEnd.depthFunc = GLS_DEPTHFUNC_EQUAL;
+		RB_BeginDrawingView();
+		RB_DetermineLightScale();
+		RB_STD_FillDepthBuffer( drawSurfs, numDrawSurfs );
+	}
+
 	// the picture, over the whole window: outside the view it is black
 	qglViewport( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
 	if ( r_useScissor.GetBool() ) {
@@ -1510,6 +1563,33 @@ bool PT_DrawView( void ) {
 	qglPopMatrix();
 	qglMatrixMode( GL_MODELVIEW );
 	qglPopMatrix();
+
+	// what the tracer leaves out, drawn as the game draws it
+	if ( overlay ) {
+		drawSurf_t	**mine = (drawSurf_t **) _alloca( numDrawSurfs * sizeof( drawSurf_t * ) );
+		int			count = 0;
+
+		for ( int i = 0; i < numDrawSurfs; i++ ) {
+			if ( PT_IsOverlay( viewDef, drawSurfs[i] ) ) {
+				mine[count++] = drawSurfs[i];
+			}
+		}
+		if ( count ) {
+			qglViewport( tr.viewportOffset[0] + viewDef->viewport.x1, tr.viewportOffset[1] + viewDef->viewport.y1,
+				viewDef->viewport.x2 + 1 - viewDef->viewport.x1, viewDef->viewport.y2 + 1 - viewDef->viewport.y1 );
+			qglScissor( tr.viewportOffset[0] + viewDef->viewport.x1 + viewDef->scissor.x1, tr.viewportOffset[1] + viewDef->viewport.y1 + viewDef->scissor.y1,
+				viewDef->scissor.x2 + 1 - viewDef->scissor.x1, viewDef->scissor.y2 + 1 - viewDef->scissor.y1 );
+			backEnd.currentScissor = viewDef->scissor;
+			GL_State( GLS_DEFAULT );
+			GL_Cull( CT_FRONT_SIDED );
+
+			// (those that work on the picture so far come last, and are drawn once it has been copied for them)
+			const int processed = RB_STD_DrawShaderPasses( mine, count );
+			if ( processed < count ) {
+				RB_STD_DrawShaderPasses( mine + processed, count - processed );
+			}
+		}
+	}
 
 	return true;
 }
