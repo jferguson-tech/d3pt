@@ -160,6 +160,18 @@ void main()
 	Hit hit;
 	Material base;
 	Surface surf;
+	// A flat mirror is looked through, not at: the view goes on the way the
+	// mirror turns it, and what it meets is the surface of this pixel, with
+	// its own colour, facing and distance, as if it stood behind the glass.
+	// Taken for light arriving at the mirror, what it shows went through the
+	// filters as light does and came out smeared, and was followed from frame
+	// to frame as if nothing in it moved, which left a trail behind all that
+	// did. Two mirrors in a row are looked through; a third is a surface.
+	bool eye_ray = true;		// not turned by a mirror yet: it sees what only the eye sees
+	uint ray_mask = held_apart ? MASK_SCENE : MASK_ALL;
+	int mirrors = 0;
+	vec3 mirror_p[2], mirror_n[2];
+	bool straight = true;		// nothing but mirrors has turned the view
 	vec3 sky = vec3(0.0);
 	bool sky_hit = false;		// the view ends at the sky, at sky_p
 	vec3 sky_p = vec3(0.0), sky_n = vec3(0.0);
@@ -167,7 +179,7 @@ void main()
 
 	for (int layer = 0; through > 0.001; layer++)
 	{
-		bool found = Closest(origin, dir, tmin, true, false, held_apart ? MASK_SCENE : MASK_ALL, true, hit, base);
+		bool found = Closest(origin, dir, tmin, eye_ray, false, ray_mask, true, hit, base);
 		if (have_held && travelled <= 0.0 && (!found || held_hit.t < hit.t))
 		{
 			// the weapon is the nearest thing: from here on this is the
@@ -217,6 +229,22 @@ void main()
 		}
 		tint *= Fade(absorb, hit.t - entered);
 		entered = hit.t;
+		if ((surf.mat.flags & MAT_MIRROR) != 0u && surf.roughness <= 0.01 && mirrors < 2 && !furnace)
+		{
+			mirror_p[mirrors] = surf.p;
+			mirror_n[mirrors] = surf.ng;
+			mirrors++;
+			tint *= Fresnel(surf.f0, dot(surf.ng, surf.wo));
+			travelled += hit.t;
+			origin = surf.p + surf.ng * RAY_OFFSET;
+			dir = normalize(dir - surf.ng * (2.0 * dot(dir, surf.ng)));
+			tmin = 0.0;
+			entered = 0.0;
+			// in a mirror the player's own body shows, and what the eye carries does not
+			eye_ray = false;
+			ray_mask = MASK_SCENE;
+			continue;
+		}
 		if (view_mode >= VIEW_LIGHTING)
 		{
 			if (view_mode == VIEW_LIGHTING)
@@ -339,6 +367,7 @@ void main()
 				tmin = 0.0;
 				entered = 0.0;
 				bent = true;
+				straight = false;
 			}
 			else if (!waves && (surf.mat.flags & MAT_REFRACT) != 0u && (fr.settings2.x & 1) != 0 && fresnel < 1.0)
 			{
@@ -368,6 +397,7 @@ void main()
 				tmin = 0.0;
 				entered = 0.0;
 				bent = true;
+				straight = false;
 			}
 		}
 
@@ -442,7 +472,8 @@ void main()
 	// eye would see it without the water's bend, or where it was if it moved
 	// (not with motion blur, which looks nothing up and wants it where it is)
 	vec3 seen = travelled > 0.0 ? eye + eye_dir * depth : surf.p;
-	const bool moved = travelled <= 0.0 && hit.moving && fr.frame_has.y != 0 && !blur;
+	// (in a mirror: where it was, as far behind each mirror as it was in front)
+	const bool moved = (travelled <= 0.0 || (mirrors > 0 && straight)) && hit.moving && fr.frame_has.y != 0 && !blur;
 	if (moved)
 	{
 		const int i = hit.tri * 9;
@@ -450,6 +481,8 @@ void main()
 		const vec3 q1 = vec3(frame_prev.v[i + 3], frame_prev.v[i + 4], frame_prev.v[i + 5]);
 		const vec3 q2 = vec3(frame_prev.v[i + 6], frame_prev.v[i + 7], frame_prev.v[i + 8]);
 		seen = q0 * (1.0 - hit.bary.x - hit.bary.y) + q1 * hit.bary.x + q2 * hit.bary.y;
+		for (int m = mirrors - 1; m >= 0; m--)
+			seen -= mirror_n[m] * (2.0 * dot(seen - mirror_p[m], mirror_n[m]));
 	}
 
 	// exact, so it skips the filters; the balls of light come with the map's lights below
