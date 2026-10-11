@@ -198,6 +198,16 @@ public:
 	idRenderWorldLocal *	world;
 	int						index;					// in world lightdefs
 
+	// Between two tics of the game: where it was a tic ago and where the game
+	// last put it, and whether it is still to be drawn all the way there.
+	// See R_SetBetweenTics.
+	idVec3					ticFromOrigin;
+	idMat3					ticFromAxis;
+	idVec3					ticToOrigin;
+	idMat3					ticToAxis;
+	int						ticMoved;				// the tic of the game it was last moved in
+	bool					ticPending;
+
 	int						areaNum;				// if not -1, we may be able to cull all the light's
 													// interactions if !viewDef->connectedAreas[areaNum]
 
@@ -254,6 +264,16 @@ public:
 
 	idRenderWorldLocal *	world;
 	int						index;					// in world entityDefs
+
+	// Between two tics of the game: where it was a tic ago and where the game
+	// last put it, and whether it is still to be drawn all the way there.
+	// See R_SetBetweenTics.
+	idVec3					ticFromOrigin;
+	idMat3					ticFromAxis;
+	idVec3					ticToOrigin;
+	idMat3					ticToAxis;
+	int						ticMoved;				// the tic of the game it was last moved in
+	bool					ticPending;
 
 	int						lastModifiedFrameNum;	// to determine if it is constantly changing,
 													// and should go in the dynamic frame memory, or kept
@@ -577,6 +597,7 @@ extern idCVar r_guiAspect;
 extern idCVar r_guiAspectNow;
 float R_GuiAspectScale( void );
 void R_ResolutionChosen( void );
+extern idCVar r_ticViewSet;
 void PT_Shutdown( void );
 void PT_Reload_f( const idCmdArgs &args );
 void PT_ListLights_f( const idCmdArgs &args );

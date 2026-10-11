@@ -2468,10 +2468,12 @@ void idSessionLocal::Draw() {
 				const usercmd_t now = usercmdGen->GetDirectUsercmd();
 				const double ticClocks = Sys_ClockTicksPerSecond() * USERCMD_MSEC * 0.001;
 				const float fraction = (float) ( ( Sys_GetClockTicks() - lastTicClock ) / ticClocks );
+				R_SetBetweenTics( true, fraction );
 				game->SetViewBetweenTics( true, idMath::ClampFloat( 0.0f, 1.0f, fraction ),
 					SHORT2ANGLE( (short) ( now.angles[YAW] - lastTicCmd.angles[YAW] ) ),
 					SHORT2ANGLE( (short) ( now.angles[PITCH] - lastTicCmd.angles[PITCH] ) ) );
 			} else {
+				R_SetBetweenTics( false, 0.0f );
 				game->SetViewBetweenTics( false, 0.0f, 0.0f, 0.0f );
 			}
 			gameDraw = game->Draw( GetLocalClientNum() );
@@ -2870,6 +2872,7 @@ void idSessionLocal::RunGameTic() {
 
 	// run the game logic every player move
 	int	start = Sys_Milliseconds();
+	R_SetGameTic( lastGameTic );
 	gameReturn_t	ret = game->RunFrame( &cmd );
 
 	int end = Sys_Milliseconds();

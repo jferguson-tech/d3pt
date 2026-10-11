@@ -102,6 +102,7 @@ public:
 
 	virtual void			SetRenderView( const renderView_t *renderView );
 	virtual	void			RenderScene( const renderView_t *renderView );
+	void					PlaceBetweenTics( void );
 
 	virtual	int				NumAreas( void ) const;
 	virtual int				PointInArea( const idVec3 &point ) const;

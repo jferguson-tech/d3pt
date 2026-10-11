@@ -260,6 +260,14 @@ public:
 
 extern idRenderSystem *			renderSystem;
 
+// The game runs 60 times a second and frames may be drawn more often
+// (com_maxFPS). The session says which tic of the game is about to be run, and
+// for each frame whether it is drawn between tics and how far the time drawn
+// is from the tic before last to the last, 0 to 1. What the game moved in the
+// last tic is then drawn on its way there: see RenderWorld.cpp.
+void	R_SetGameTic( int tic );
+void	R_SetBetweenTics( bool on, float fraction );
+
 //
 // functions mainly intended for editor and dmap integration
 //
