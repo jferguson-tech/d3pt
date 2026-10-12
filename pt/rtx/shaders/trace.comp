@@ -94,6 +94,10 @@ void main()
 		return;
 	const int now = fr.frame_has.z;
 	rng_state = Hash(uint(pixel.y * size.x + pixel.x), uint(fr.counts.z));
+	reuse.count = 0;
+	reuse.keep = false;
+	reuse.kept.of = 0.0;
+	imageStore(img_reservoir[now * 2 + 1], pixel, vec4(0.0));		// no light picked, unless one is below
 
 	// the eye as the shutter closes, and, with motion blur, where it was at
 	// a moment of this pixel's own before that: between the shutter opening
@@ -554,7 +558,61 @@ void main()
 		if (!has_specular || !SampleSpecular(surf, mirrored, shine))
 			shine = vec3(0.0);
 
+		// The lights picked last frame for this point and for three near it
+		// are weighed with this frame's: see Reuse in scene.glsl.
+		// (Not in a mirror or through water: the pixels near where the point was do not show what is near it.)
+		if (k == 0 && fr.out_size.z != 0 && view_mode == VIEW_NORMAL && travelled <= 0.0)
+		{
+			reuse.keep = true;
+			const vec3 v = seen - fr.prev_origin.xyz;
+			const float z = dot(v, fr.prev_forward.xyz);
+			if (z > 0.01)
+			{
+				const vec2 was = vec2((dot(v, fr.prev_right.xyz) / (z * fr.prev_origin.w) * 0.5 + 0.5) * float(size.x),
+					(0.5 - dot(v, fr.prev_up.xyz) / (z * fr.prev_forward.w) * 0.5) * float(size.y));
+				const float expected = length(v);
+				const int prev = 1 - now;
+				for (int i = 0; i < REUSED; i++)
+				{
+					// (the first where it was, the rest anywhere within thirty pixels of there)
+					vec2 off = vec2(0.0);
+					if (i > 0)
+					{
+						const float r = 30.0 * sqrt(Rand()), a = 2.0 * PI * Rand();
+						off = vec2(cos(a), sin(a)) * r;
+					}
+					const ivec2 q = ivec2(floor(was + off));
+					if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+						continue;
+					// of a surface that faces as this one does and is as far off
+					const vec4 there = imageLoad(img_surface[prev], q);
+					if (there.a < 0.0 || dot(there.xyz, surf.n) < 0.9 || abs(there.a - expected) > 0.1 * expected)
+						continue;
+					// (a neighbour whose pick was hidden from it says nothing of what is hidden from here)
+					const vec4 count = imageLoad(img_reservoir[prev * 2 + 1], q);
+					if (!(count.y > 0.0))
+						continue;
+					const vec4 where = imageLoad(img_reservoir[prev * 2], q);
+					// where that pixel's point was: along its view of last frame, as far as it was
+					const vec3 its_dir = normalize(fr.prev_forward.xyz
+						+ fr.prev_right.xyz * ((2.0 * (float(q.x) + 0.5) / float(size.x) - 1.0) * fr.prev_origin.w)
+						+ fr.prev_up.xyz * ((1.0 - 2.0 * (float(q.y) + 0.5) / float(size.y)) * fr.prev_forward.w));
+					reuse.at[reuse.count++] = Pick(where.xyz, uint(where.w), count.x, count.y,
+						i == 0 ? surf.p : fr.prev_origin.xyz + its_dir * there.a, i == 0 ? surf.n : there.xyz);
+				}
+			}
+		}
 		const Lit direct = DirectWorld(surf, true), ball = DirectFrameBall(surf);
+		if (reuse.keep)
+		{
+			if (reuse.kept.of > 0.0)
+			{
+				imageStore(img_reservoir[now * 2], pixel, vec4(reuse.kept.y, float(reuse.kept.light)));
+				imageStore(img_reservoir[now * 2 + 1], pixel, vec4(reuse.kept.worth, reuse.kept.of, 0.0, 0.0));
+			}
+			reuse.keep = false;
+			reuse.count = 0;
+		}
 		vec3 d = (1.0 - shine) * (direct.diffuse + ball.diffuse) * (INV_PI * direct_on);
 		vec3 sp = (direct.specular + ball.specular) / spec_albedo * direct_on;
 		int followed_d = 0, followed_s = 0;		// rays the diffuse and the specular path were made of

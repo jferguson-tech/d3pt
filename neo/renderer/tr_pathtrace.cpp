@@ -100,6 +100,7 @@ idCVar r_ptLightScale( "r_ptLightScale", "1", CVAR_RENDERER | CVAR_FLOAT | CVAR_
 idCVar r_ptDenoise( "r_ptDenoise", "4", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: passes of the spatial filter, 0-4" );
 idCVar r_ptEntities( "r_ptEntities", "1", CVAR_RENDERER | CVAR_BOOL, "path tracer: trace the models of entities: monsters, doors, the weapon and all else that is not the map itself" );
 idCVar r_ptLightSamples( "r_ptLightSamples", "8", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: lights weighed at each point before one is chosen, up to 64" );
+idCVar r_ptLightReuse( "r_ptLightReuse", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer, experimental: the light picked for a pixel is weighed against those picked for it last frame and for pixels near it, and the best kept: less noise in each frame of the light that comes straight from lamps, which is 3 to 5% dimmer for it" );
 idCVar r_ptFireflyClamp( "r_ptFireflyClamp", "16", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: the brightest a single bounced sample may be" );
 idCVar r_ptGlow( "r_ptGlow", "0.1", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much light a surface the game draws unlit gives off, for a white texel; it is shown as painted whatever this is; needs reloadPathTrace" );
 idCVar r_ptShadowFaces( "r_ptShadowFaces", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: shadows are cast by the side of a surface that is turned to the light, as the game casts them: a lamp set inside a wall shines out of it" );
@@ -1838,6 +1839,7 @@ bool PT_DrawView( void ) {
 	view.shadow_faces = r_ptShadowFaces.GetBool();
 	view.reflection_rate = 1.0f;
 	view.light_samples = r_ptLightSamples.GetInteger();
+	view.light_reuse = r_ptLightReuse.GetBool();
 	view.firefly_clamp = r_ptFireflyClamp.GetFloat();
 	view.texture_filter = 1;
 	view.denoise = r_ptDenoise.GetInteger();

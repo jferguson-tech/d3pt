@@ -177,7 +177,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	water_at[24];	// x: the height of its surface; y: a material that carries its maps, or less than 0: none of it is seen from above; z: its wave picture; w: its caustic picture
 	vec4	water_wave[24];	// where its pictures lie: the material's wave_rect
 	vec4	water_lamp[24 * 16];	// xyz: where the light on it comes from, for the patterns its waves throw, over each of four by four parts of its extent: see Lamp
-	ivec4	out_size;		// xy: of the finished picture, the size of the view
+	ivec4	out_size;		// xy: of the finished picture, the size of the view; z: lights picked are reused, see Reuse
 	vec4	open_origin;	// motion blur: the eye as the shutter opened; w: there is blur
 	vec4	open_forward;
 	vec4	open_right;
@@ -253,6 +253,10 @@ layout(set = 0, binding = 34, rgba32f) uniform image2D img_change[4];
 // light would put on it with nothing in the way, through the matte part and
 // through the shine. See DirectEveryLight.
 layout(set = 0, binding = 35, rgba32f) uniform image2D img_export[4];
+// The light picked for each pixel, [frame * 2]: xyz where on the light, w the
+// light; [frame * 2 + 1]: x what it counts for, y of how many it is the pick,
+// none if nothing was picked. See Reuse.
+layout(set = 0, binding = 39, rgba32f) uniform image2D img_reservoir[4];
 
 // how far what was gathered at a pixel is to be let go: the blocks' values,
 // smoothly from one block to the next
@@ -1590,6 +1594,89 @@ void WaterBounce(Surface s, vec3 y, vec3 e, inout Lit lit)
 	lit.specular += add.specular;
 }
 
+// What light l sends from its point y to a surface at p that faces n (air:
+// one that has no facing), with nothing in the way, and the way there.
+// False: nothing.
+bool LightAt(vec3 p, vec3 n, bool air, Light l, vec3 y, out vec3 wi, out vec3 e)
+{
+	wi = vec3(0.0);
+	e = l.emission;
+	const bool area = l.tri < POINT_LIGHT;
+	if (!area)
+	{
+		const int style = int(l.tri - POINT_LIGHT);
+		const float scale = style > 0 ? tables.v[style] : 1.0;
+		if (scale <= 0.0)
+			return false;
+		e *= scale;
+	}
+	const vec3 d = y - p;
+	const float dist2 = dot(d, d);
+	if (dist2 <= 1.0e-6)
+		return false;
+	wi = d * inversesqrt(dist2);
+	if (l.cone_cos > 0.0 && !area && -dot(wi, l.dir) < l.cone_cos)
+		return false;		// outside the spotlight's cone
+	if (!air && dot(n, wi) <= 0.0)
+		return false;
+	float geom = 1.0 / dist2;
+	if (!area && l.radius <= 0.0)
+	{
+		geom = 1.0 / max(dist2, l.edge.y * l.edge.y);		// see pt_point_light_t's core
+		const float fade = LightFade(l, p, dist2);
+		if (fade <= 0.0)
+			return false;
+		geom *= fade;
+	}
+	if (area)
+	{
+		const vec3 x = cross(l.dir, l.edge);
+		const float len = length(x);
+		const float cosy = len > 0.0 ? -dot(x, wi) / len : 0.0;
+		if (cosy <= 0.0)
+			return false;
+		geom *= cosy;
+	}
+	e *= geom;
+	return true;
+}
+
+// Lights picked before, for the surface the eye sees: the one picked for
+// this point last frame and those picked for points near it. Each is the
+// pick of many, and stands for them: weighed again here against this
+// frame's handful, the pixel has the choice of hundreds of lights for the
+// price of a few, and what is chosen is nearly always a light that matters.
+// (Reservoir resampling: Bitterli and others, 2020.) A pick counts for as
+// many as it was chosen from only if the light chosen in the end reaches
+// the point it comes from: counted regardless, every neighbour in reach of
+// a lamp that this point is not darkened it. How that point faces is left
+// out of it: with the facing its normal map gives it, too few were counted
+// and the light came out half as bright again. What is in the way is not
+// looked at, there or here, until the light is chosen, and a pick that
+// turns out hidden is kept for what it would be worth in the open: kept as
+// worth nothing, it darkened every neighbour that it is not hidden from.
+// Measured against 64 candidates and four paths a pixel the light is 3 to
+// 5% low. The caller of DirectLights fills in at, and has in kept what to
+// keep for the frames to come.
+const int REUSED = 4;
+const float REUSE_MOST = 20.0;		// how many frames' worth a pick may stand for
+struct Pick
+{
+	vec3	y;			// where on the light
+	uint	light;
+	float	worth;		// what it counts for: the light it sends is multiplied by this
+	float	of;			// how many it was picked from; 0: there is none
+	vec3	p, n;		// the point it was picked for, and how that faces
+};
+struct Reuse
+{
+	int		count;		// of at; 0: none are weighed
+	bool	keep;		// kept is wanted
+	Pick	at[REUSED];
+	Pick	kept;
+};
+Reuse reuse;
+
 // The map's lights. A handful of candidates are weighed by the light they
 // would put on the surface, which is cheap; one is drawn in proportion, and
 // only for that one is it found out whether anything is in the way.
@@ -1605,6 +1692,7 @@ Lit DirectLights(Surface s, bool first_hit)
 	vec3 chosen_y = vec3(0.0), chosen_wi = vec3(0.0), chosen_e = vec3(0.0);
 	float chosen_phat = 0.0;
 	bool chosen_free = false;		// it casts no shadows
+	uint chosen_light = 0u;
 
 	const bool has_grid = fr.grid_dims.w != 0;
 	const int cell = has_grid ? GridCell(s.p) : -1;
@@ -1656,67 +1744,27 @@ Lit DirectLights(Surface s, bool first_hit)
 		const Light l = world_lights.l[li];
 		float pdf = use_global * l.pdf + (1.0 - use_global) * cell_pdf;
 
-		vec3 y, e, light_n = vec3(0.0);
+		vec3 y = l.origin;
 		const bool area = l.tri < POINT_LIGHT;
 		if (area)
 		{
-			const vec3 p0 = l.origin;
-			const vec3 e1 = l.dir, e2 = l.edge;
 			float a = Rand(), b = Rand();
 			if (a + b > 1.0)
 			{
 				a = 1.0 - a;
 				b = 1.0 - b;
 			}
-			y = p0 + e1 * a + e2 * b;
-			e = l.emission;
-			const vec3 x = cross(e1, e2);
-			const float len = length(x);
+			y = l.origin + l.dir * a + l.edge * b;
+			const float len = length(cross(l.dir, l.edge));
 			if (len <= 0.0)
 				continue;
-			light_n = x / len;
 			pdf /= len * 0.5;
 		}
-		else
-		{
-			y = l.origin;
-			const int style = int(l.tri - POINT_LIGHT);
-			const float scale = style > 0 ? tables.v[style] : 1.0;
-			if (scale <= 0.0)
-				continue;
-			e = l.emission * scale;
-		}
-
-		const vec3 d = y - s.p;
-		const float dist2 = dot(d, d);
-		if (dist2 <= 1.0e-6)
+		vec3 wi, e;
+		if (!LightAt(s.p, s.n, s.medium, l, y, wi, e))
 			continue;
-		const vec3 wi = d * inversesqrt(dist2);
-		if (l.cone_cos > 0.0 && !area && -dot(wi, l.dir) < l.cone_cos)
-			continue;		// outside the spotlight's cone
-		const float nol = s.medium ? 1.0 : dot(s.n, wi);
-		if (nol <= 0.0)
-			continue;
-		float geom = 1.0 / dist2;
-		if (!area && l.radius <= 0.0)
-			geom = 1.0 / max(dist2, l.edge.y * l.edge.y);		// see pt_point_light_t's core
-		if (!area && l.radius <= 0.0)
-		{
-			const float fade = LightFade(l, s.p, dist2);
-			if (fade <= 0.0)
-				continue;
-			geom *= fade;
-		}
-		if (area)
-		{
-			const float cosy = -dot(light_n, wi);
-			if (cosy <= 0.0)
-				continue;
-			geom *= cosy;
-		}
-		e *= geom;
 
-		const float phat = Luminance(e) * nol;
+		const float phat = Luminance(e) * (s.medium ? 1.0 : dot(s.n, wi));
 		if (phat <= 0.0 || pdf <= 0.0)
 			continue;
 		const float weight = phat / pdf;
@@ -1728,12 +1776,54 @@ Lit DirectLights(Surface s, bool first_hit)
 			chosen_e = e;
 			chosen_phat = phat;
 			chosen_free = !area && l.no_shadow > 0.0;
+			chosen_light = li;
 		}
+	}
+
+	// and against those the lights picked before: see Reuse
+	const bool reusing = first_hit && reuse.keep;
+	float of = float(candidates);
+	if (reusing)
+	{
+		for (int i = 0; i < reuse.count; i++)
+		{
+			const Pick was = reuse.at[i];
+			const Light l = world_lights.l[was.light];
+			vec3 wi, e;
+			if (!LightAt(s.p, s.n, s.medium, l, was.y, wi, e))
+				continue;
+			const float phat = Luminance(e) * (s.medium ? 1.0 : dot(s.n, wi));
+			const float weight = phat * was.worth * was.of;
+			if (!(weight > 0.0))
+				continue;
+			wsum += weight;
+			if (Rand() * wsum < weight)
+			{
+				chosen_y = was.y;
+				chosen_wi = wi;
+				chosen_e = e;
+				chosen_phat = phat;
+				chosen_free = l.tri >= POINT_LIGHT && l.no_shadow > 0.0;
+				chosen_light = was.light;
+			}
+		}
+		reuse.kept.of = 0.0;
 	}
 
 	if (wsum <= 0.0)
 		return none;
-	chosen_e *= wsum / (float(candidates) * chosen_phat);
+	if (reusing)
+	{
+		const Light l = world_lights.l[chosen_light];
+		for (int i = 0; i < reuse.count; i++)
+		{
+			vec3 wi, e;
+			if (LightAt(reuse.at[i].p, reuse.at[i].n, true, l, chosen_y, wi, e))
+				of += reuse.at[i].of;
+		}
+	}
+	const float worth = wsum / (of * chosen_phat);
+	chosen_e *= worth;
 
 	// Light bends going into a simulated liquid, so a shadow under one
 	// falls where the bent light is cut off. For what the eye sees itself:
@@ -1750,6 +1840,8 @@ Lit DirectLights(Surface s, bool first_hit)
 	const float clear = (chosen_free ? 1.0 : Visible(Leave(s), chosen_y, bent, crossing, ShadowMask(s))) * gets_in;
 	if (clear > 0.0)
 		lit = Reflect(s, chosen_wi, chosen_e * clear);
+	if (reusing)
+		reuse.kept = Pick(chosen_y, chosen_light, worth, min(of, REUSE_MOST * float(candidates)), s.p, s.n);
 	if (F_WATERS > 0)
 		WaterBounce(s, chosen_y, chosen_e, lit);
 	return lit;
