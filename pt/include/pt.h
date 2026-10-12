@@ -138,7 +138,8 @@ typedef struct pt_material_s
 								   texture is, that says what glows and in what
 								   colour: emitted light is it times emission.
 								   Found by paths only, not sampled as a light.
-								   See also PT_MAT_EMIT_MAPPED */
+								   emission_seen applies: to the eye it is the
+								   map times that. See also PT_MAT_EMIT_MAPPED */
 	int			normal_texture;	/* -1 for none; same numbering as texture. RGB is a
 								   tangent space normal (x along u, y along v),
 								   alpha replaces roughness. See also
