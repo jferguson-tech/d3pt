@@ -13,6 +13,7 @@ namespace PT_NS {
 namespace {
 
 const float kGlobalLightChance = 0.2f;	// how often a light is picked map wide instead of nearby
+const float kUnknownSkyChance = 0.25f;	// how often the sky is looked for from where no cell of the light grid is kept
 const float kMinAlpha = 0.002f;			// GGX gets numerically touchy below this
 
 void TexCoord(const Tri &t, float u, float v, float &s, float &tt)
@@ -1029,8 +1030,9 @@ static Lit DirectLights(const Scene &sc, const Surface &s, Rng &rng, bool first_
 
 	const LightGrid &g = w.grid;
 	const int k = LightGrid::kPerCell;
-	const size_t cell = g.count.empty() ? 0 : g.Cell(s.p);
-	const int in_cell = g.count.empty() ? 0 : g.count[cell];
+	const int found = g.count.empty() ? -1 : g.Cell(s.p);
+	const size_t cell = found < 0 ? 0 : (size_t)found;
+	const int in_cell = found < 0 ? 0 : g.count[cell];
 	const float *cell_cdf = in_cell ? &g.cdf[cell * k] : nullptr;
 	const float use_global = in_cell ? kGlobalLightChance : 1.0f;
 
@@ -1145,7 +1147,11 @@ static Lit DirectSky(const Scene &sc, const Surface &s, Rng &rng)
 
 	float chance = 1.0f;
 	if (!w.sky_chance.empty())
-		chance = w.sky_chance[w.grid.Cell(s.p)];
+	{
+		// (a place no cell is kept for: nothing is known of the sky there)
+		const int cell = w.grid.Cell(s.p);
+		chance = cell < 0 ? kUnknownSkyChance : w.sky_chance[cell];
+	}
 	if (chance <= 0.0f || rng.Float() >= chance)
 		return none;
 

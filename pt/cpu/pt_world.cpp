@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <functional>
 #include <utility>
 
 namespace PT_NS {
@@ -124,17 +125,101 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 		}
 	}
 
-	// about 40000 cells, but never finer than a doorway
-	const Vec3 extent = hi - lo;
-	float cell = std::cbrt(std::max(1.0f, extent.x * extent.y * extent.z) / 40000.0f);
-	if (cell < 96.0f)
-		cell = 96.0f;
-	g.origin = lo;
-	g.inv_cell = 1.0f / cell;
-	for (int a = 0; a < 3; a++)
-		g.dims[a] = std::max(1, (int)std::ceil(extent[a] * g.inv_cell));
+	// places spread evenly over the map's surfaces, a hair off them and about half a cell apart
+	const auto places = [&](const std::function<void(Vec3)> &each)
+	{
+		for (const Tri &t : w.tris)
+		{
+			const int steps = std::min(8, std::max(1, (int)std::ceil(std::sqrt(t.area * 2.0f) * g.inv_cell * 2.0f)));
+			for (int i = 0; i < steps; i++)
+				for (int j = 0; i + j < steps; j++)
+				{
+					const float a = ((float)i + 1.0f / 3.0f) / (float)steps, b = ((float)j + 1.0f / 3.0f) / (float)steps;
+					each(t.p0 + t.e1 * a + t.e2 * b + t.n * 1.0f);
+				}
+		}
+	};
 
-	const size_t cells = (size_t)g.dims[0] * g.dims[1] * g.dims[2];
+	// Cells the size of a doorway, unless that makes too many. Most of a
+	// map's box is empty, and an engine's maps reach far beyond their rooms,
+	// to a sky or to somewhere a scene is played out, so only the cells
+	// with something in them are kept: those a surface of the map passes
+	// through, and those a light with a reach lights, where something that
+	// moves may be. With a list for every cell of the box, the cells of such
+	// a map came out hundreds of units across, with sixty lights to each,
+	// and a lamp's own small light was not among those kept: it lit nothing.
+	const Vec3 extent = hi - lo;
+	const size_t kMostCells = 60000;
+	std::vector<uint32_t> kept;
+	float cell = 96.0f;
+	for (;; cell *= 1.25f)
+	{
+		g.origin = lo;
+		g.inv_cell = 1.0f / cell;
+		double all = 1.0;
+		for (int a = 0; a < 3; a++)
+		{
+			g.dims[a] = std::max(1, (int)std::ceil(extent[a] * g.inv_cell));
+			all *= (double)g.dims[a];
+		}
+		if (all >= (double)(1u << 27))
+			continue;		// a key has 27 bits
+		kept.clear();
+		places([&](Vec3 at) { kept.push_back(g.Key(at)); });
+		bool fits = true;
+		for (const Light &l : w.lights)
+		{
+			if (l.tri != ~0u || l.reach <= 0.0f)
+				continue;
+			const bool box = l.box_size.x > 0.0f;
+			int from[3], to[3];
+			size_t in = 1;
+			for (int a = 0; a < 3; a++)
+			{
+				const float mid = box ? l.box_origin[a] : l.origin[a], half = box ? l.box_size[a] : l.reach;
+				from[a] = std::min(std::max((int)std::floor((mid - half - lo[a]) * g.inv_cell), 0), g.dims[a] - 1);
+				to[a] = std::min(std::max((int)std::floor((mid + half - lo[a]) * g.inv_cell), 0), g.dims[a] - 1);
+				in *= (size_t)(to[a] - from[a] + 1);
+			}
+			if (in > kMostCells)
+			{
+				fits = false;
+				break;
+			}
+			for (int z = from[2]; z <= to[2]; z++)
+				for (int y = from[1]; y <= to[1]; y++)
+					for (int x = from[0]; x <= to[0]; x++)
+						kept.push_back(((uint32_t)z * (uint32_t)g.dims[1] + (uint32_t)y) * (uint32_t)g.dims[0] + (uint32_t)x);
+		}
+		std::sort(kept.begin(), kept.end());
+		kept.erase(std::unique(kept.begin(), kept.end()), kept.end());
+		if (fits && kept.size() <= kMostCells)
+			break;
+	}
+
+	// each in a slot, twice as many slots as cells or more, until none is far from where it is first looked for
+	size_t cells = 1024;
+	while (cells < kept.size() * 2)
+		cells *= 2;
+	for (;; cells *= 2)
+	{
+		g.key.assign(cells, LightGrid::kNone);
+		const uint32_t mask = (uint32_t)cells - 1;
+		bool placed = true;
+		for (size_t n = 0; n < kept.size() && placed; n++)
+		{
+			uint32_t h = LightGrid::Hash(kept[n]) & mask;
+			int i = 0;
+			for (; i < LightGrid::kProbes && g.key[h] != LightGrid::kNone; i++)
+				h = (h + 1) & mask;
+			placed = i < LightGrid::kProbes;
+			if (placed)
+				g.key[h] = kept[n];
+		}
+		if (placed)
+			break;
+	}
+
 	const int k = LightGrid::kPerCell;
 	g.light.assign(cells * k, 0);
 	g.pdf.assign(cells * k, 0.0f);
@@ -161,24 +246,18 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 		seen_from.resize(cells * kSeen);
 		seen_count.assign(cells, 0);
 		std::vector<uint32_t> met(cells, 0);
-		for (const Tri &t : w.tris)
+		places([&](Vec3 at)
 		{
-			// evenly over the triangle, about half a cell apart
-			const int steps = std::min(8, std::max(1, (int)std::ceil(std::sqrt(t.area * 2.0f) * g.inv_cell * 2.0f)));
-			for (int i = 0; i < steps; i++)
-				for (int j = 0; i + j < steps; j++)
-				{
-					const float a = ((float)i + 1.0f / 3.0f) / (float)steps, b = ((float)j + 1.0f / 3.0f) / (float)steps;
-					const Vec3 at = t.p0 + t.e1 * a + t.e2 * b + t.n * 1.0f;
-					const size_t ci = g.Cell(at);
-					// the first kSeen, then every so often one in place of another, so that they are spread out
-					const uint32_t n = met[ci]++;
-					if (n < (uint32_t)kSeen)
-						seen_from[ci * kSeen + seen_count[ci]++] = at;
-					else if (n % 7u == 0u)
-						seen_from[ci * kSeen + (n / 7u) % (uint32_t)kSeen] = at;
-				}
-		}
+			const int ci = g.Cell(at);
+			if (ci < 0)
+				return;
+			// the first kSeen, then every so often one in place of another, so that they are spread out
+			const uint32_t n = met[ci]++;
+			if (n < (uint32_t)kSeen)
+				seen_from[ci * kSeen + seen_count[ci]++] = at;
+			else if (n % 7u == 0u)
+				seen_from[ci * kSeen + (n / 7u) % (uint32_t)kSeen] = at;
+		});
 	}
 	const auto solid = [&](uint32_t i)
 	{
@@ -188,7 +267,10 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 
 	for (size_t ci = 0; ci < cells; ci++)
 	{
-		const size_t cx = ci % g.dims[0], cy = (ci / g.dims[0]) % g.dims[1], cz = ci / ((size_t)g.dims[0] * g.dims[1]);
+		if (g.key[ci] == LightGrid::kNone)
+			continue;
+		const size_t at_cell = g.key[ci];
+		const size_t cx = at_cell % g.dims[0], cy = (at_cell / g.dims[0]) % g.dims[1], cz = at_cell / ((size_t)g.dims[0] * g.dims[1]);
 		const Vec3 centre = lo + Vec3(cx + 0.5f, cy + 0.5f, cz + 0.5f) * cell;
 
 		for (size_t li = 0; li < w.lights.size(); li++)
@@ -275,6 +357,21 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 				// (score has the fade at the cell's middle in it already)
 				const float whole = power[li] / std::max(std::max(Dot(d, d), min_dist2), l.core * l.core);
 				score = 0.02f * score + 0.98f * whole * lit / (float)seen_count[ci];
+			}
+			// A lamp's own light is a small volume, and the few places may all
+			// lie outside it. Where it does reach it is as bright as any. It
+			// counts for no less than the share of the cell that it fills.
+			if (l.tri == ~0u && l.box_size.x > 0.0f)
+			{
+				float share = 1.0f;
+				for (int a = 0; a < 3; a++)
+				{
+					const float from = std::max(centre[a] - cell * 0.5f, l.box_origin[a] - l.box_size[a]);
+					const float to = std::min(centre[a] + cell * 0.5f, l.box_origin[a] + l.box_size[a]);
+					share *= std::max(to - from, 0.0f) / cell;
+				}
+				const float whole = power[li] / std::max(std::max(Dot(d, d), min_dist2), l.core * l.core);
+				score = std::max(score, whole * share * 0.3f);
 			}
 			scored[li] = {score, (uint32_t)li};
 		}
@@ -407,7 +504,7 @@ void BuildSkyChance(World &w)
 	// (none anywhere under no sky, but said of every cell all the same: the
 	// card takes a grid without it for no grid, and then every light is
 	// picked from the whole map)
-	const size_t cells = (size_t)g.dims[0] * g.dims[1] * g.dims[2];
+	const size_t cells = g.count.size();
 	w.sky_chance.assign(cells, 0.0f);
 	if (w.sky_cdf.empty())
 		return;
@@ -416,7 +513,10 @@ void BuildSkyChance(World &w)
 
 	for (size_t ci = 0; ci < cells; ci++)
 	{
-		const size_t cx = ci % g.dims[0], cy = (ci / g.dims[0]) % g.dims[1], cz = ci / ((size_t)g.dims[0] * g.dims[1]);
+		if (g.key[ci] == LightGrid::kNone)
+			continue;
+		const size_t at_cell = g.key[ci];
+		const size_t cx = at_cell % g.dims[0], cy = (at_cell / g.dims[0]) % g.dims[1], cz = at_cell / ((size_t)g.dims[0] * g.dims[1]);
 		int reached = 0;
 		const int points = 5, dirs = 6;
 		for (int p = 0; p < points; p++)
@@ -446,9 +546,10 @@ void BuildSkyChance(World &w)
 	std::vector<float> spread(w.sky_chance);
 	for (size_t ci = 0; ci < cells; ci++)
 	{
-		if (w.sky_chance[ci] > 0.0f)
+		if (w.sky_chance[ci] > 0.0f || g.key[ci] == LightGrid::kNone)
 			continue;
-		const int cx = (int)(ci % g.dims[0]), cy = (int)((ci / g.dims[0]) % g.dims[1]), cz = (int)(ci / ((size_t)g.dims[0] * g.dims[1]));
+		const size_t at_cell = g.key[ci];
+		const int cx = (int)(at_cell % g.dims[0]), cy = (int)((at_cell / g.dims[0]) % g.dims[1]), cz = (int)(at_cell / ((size_t)g.dims[0] * g.dims[1]));
 		float best = 0.0f;
 		for (int dz = -1; dz <= 1; dz++)
 			for (int dy = -1; dy <= 1; dy++)
@@ -457,7 +558,9 @@ void BuildSkyChance(World &w)
 					const int x = cx + dx, y = cy + dy, z = cz + dz;
 					if (x < 0 || y < 0 || z < 0 || x >= g.dims[0] || y >= g.dims[1] || z >= g.dims[2])
 						continue;
-					best = std::max(best, w.sky_chance[((size_t)z * g.dims[1] + y) * g.dims[0] + x]);
+					const int there = g.Slot(((uint32_t)z * (uint32_t)g.dims[1] + (uint32_t)y) * (uint32_t)g.dims[0] + (uint32_t)x);
+					if (there >= 0)
+						best = std::max(best, w.sky_chance[there]);
 				}
 		spread[ci] = best > 0.0f ? 0.1f : 0.0f;
 	}

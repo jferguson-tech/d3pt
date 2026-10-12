@@ -378,6 +378,7 @@ struct RtxBackend
 	bool					has_grid = false;
 	float					grid_origin[3] = {0, 0, 0}, grid_inv_cell = 0.0f;
 	int						grid_dims[3] = {0, 0, 0};
+	size_t					grid_slots = 0;		// see pt::LightGrid
 	int						table_light_keep = 0, table_grid_pdf = 0, table_grid_keep = 0, table_sky_chance = 0, table_sky_cdf = 0;
 	int						index_grid_light = 0, index_grid_count = 0, index_light_other = 0, index_grid_sorted = 0;
 	int						sky_res = 0;
@@ -2279,7 +2280,8 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 			memcpy(&tables[s->table_grid_keep + first], keep.data(), per_cell * sizeof(float));
 			memcpy(&index[s->index_grid_light + first], entry, sizeof(entry));
 			memcpy(&index[s->index_grid_sorted + first], sorted, sizeof(sorted));
-			index[s->index_grid_count + c] = (uint32_t)count;
+			// (with the cell that is kept here: see GridCell in the shaders)
+			index[s->index_grid_count + c] = grid.key[c] == pt::LightGrid::kNone ? ~0u : (grid.key[c] << 5) | (uint32_t)count;
 		}
 	}
 
@@ -2302,6 +2304,7 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		s->grid_dims[a] = grid.dims[a];
 	}
 	s->grid_inv_cell = grid.inv_cell;
+	s->grid_slots = cells;
 	s->num_waters = 0;
 	for (const pt::World::Water &body : w->waters)
 	{
@@ -2834,7 +2837,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.bases[2] = filtering;
 	f.bases[1] = (int32_t)s->world.num_solid;
 	f.bases[3] = (int32_t)s->frame.num_solid;
-	f.grid_dims[3] = s->has_grid ? 1 : 0;
+	f.grid_dims[3] = s->has_grid ? (int32_t)s->grid_slots : 0;
 	f.grid_origin[3] = s->grid_inv_cell;
 	f.table_at[0] = s->table_light_keep;
 	f.table_at[1] = s->table_grid_pdf;
