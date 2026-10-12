@@ -88,6 +88,7 @@ const float RAY_OFFSET = 0.03;				// keeps rays off the surface they leave
 const float LIGHT_SAMPLED_ROUGHNESS = 0.25;	// below this a highlight is found by its own path
 const float MIN_ALPHA = 0.002;				// GGX gets numerically touchy below this
 const float GLOBAL_LIGHT_CHANCE = 0.2;		// how often a light is picked map wide instead of nearby
+const float BOUNCE_SPREAD = 0.03;			// how wide a bounced ray is taken to be, for each unit it has gone
 const int PER_CELL = 24;					// lights listed per cell of the grid
 const int GRID_PROBES = 8;					// slots a cell of the grid is looked for in
 const float UNKNOWN_SKY_CHANCE = 0.25;		// how often the sky is looked for from where no cell is kept
@@ -460,6 +461,41 @@ vec4 Texel(int slot, vec2 uv, bool smooth_it)
 	if (smooth_it)
 		return textureLod(sampler2D(textures[nonuniformEXT(slot)], smooth_sampler), uv, 0.0);
 	return textureLod(sampler2D(textures[nonuniformEXT(slot)], nearest_sampler), uv, 0.0);
+}
+
+// The same over what a ray covers of the surface, which is across[0] and
+// across[1] of the picture one way and the other: read from the picture at
+// the size that fits, and along the longer of the two where they differ, as
+// a card reads a texture it draws. Nothing covered: the picture as it is.
+vec4 Texel(int slot, vec2 uv, bool smooth_it, vec2 across[2])
+{
+	if (across[0] == vec2(0.0) && across[1] == vec2(0.0))
+		return Texel(slot, uv, smooth_it);
+	return textureGrad(sampler2D(textures[nonuniformEXT(slot)], smooth_sampler), uv, across[0], across[1]);
+}
+
+// How far across its picture a triangle is covered by a ray that is foot
+// wide where it meets it: wider along the way the ray goes over the surface,
+// the more it comes from the side. e1 and e2 are the triangle's edges, uv1
+// and uv2 how far the picture runs along each.
+void Covered(vec3 e1, vec3 e2, vec2 uv1, vec2 uv2, vec3 n, vec3 dir, float foot, out vec2 across[2])
+{
+	across[0] = across[1] = vec2(0.0);
+	const float e11 = dot(e1, e1), e12 = dot(e1, e2), e22 = dot(e2, e2);
+	const float det = e11 * e22 - e12 * e12;
+	if (foot <= 0.0 || det <= 1.0e-12)
+		return;
+	const float cosine = dot(n, dir);
+	const vec3 along = dir - n * cosine;
+	const float len = length(along);
+	const vec3 a = len > 1.0e-4 ? along / len : e1 * inversesqrt(e11);
+	// (no more than sixteen times as long as wide: beyond that a card does not go either)
+	const vec3 way[2] = vec3[2](a * (foot / max(abs(cosine), 1.0 / 16.0)), cross(n, a) * foot);
+	for (int i = 0; i < 2; i++)
+	{
+		const float d1 = dot(way[i], e1), d2 = dot(way[i], e2);
+		across[i] = (uv1 * (d1 * e22 - d2 * e12) + uv2 * (d2 * e11 - d1 * e12)) / det;
+	}
 }
 
 // about the sky's axis, by the angle whose sine is s
@@ -1060,7 +1096,9 @@ vec3 SpecularAlbedo(Surface s)
 	return s.f0 * scale + vec3(bias);
 }
 
-void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, out Surface s)
+// foot: how wide the ray is where it meets the surface, for reading its
+// pictures (see Covered); 0 reads them as they are
+void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, float foot, out Surface s)
 {
 	const Tri tri = TriOf(hit);
 	const Material mat = Animated(base, hit.moving);
@@ -1088,6 +1126,8 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		uv.y += 0.125 * sin(u0 * 8.0 + fr.sky_misc.w);
 	}
 	uv += mat.scroll * fr.sky_misc.w;
+	vec2 across[2];
+	Covered(e1, e2, tri.uv1 - tri.uv0, tri.uv2 - tri.uv0, s.tri_n, dir, foot, across);
 
 	// a simulated surface: the wave picture holds its slopes and height
 	const float wave_strength = F_WAVE_STRENGTH;
@@ -1105,8 +1145,8 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		uv += wave * 0.5;
 	}
 
-	s.colour = mat.texture < 0 ? vec3(1.0) : ToLinear(Texel(mat.texture, uv, smooth_it).rgb);
-	s.glow = mat.emission_map >= 0 ? ToLinear(Texel(mat.emission_map, uv, smooth_it).rgb) : vec3(0.0);
+	s.colour = mat.texture < 0 ? vec3(1.0) : ToLinear(Texel(mat.texture, uv, smooth_it, across).rgb);
+	s.glow = mat.emission_map >= 0 ? ToLinear(Texel(mat.emission_map, uv, smooth_it, across).rgb) : vec3(0.0);
 	s.roughness = mat.roughness;
 	float metallic = mat.emission_per_texel.a;
 
@@ -1131,7 +1171,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	if (mat.normal_texture >= 0)
 	{
 		// x, y, z and roughness; the texture's own directions across the triangle
-		const vec4 c = Texel(mat.normal_texture, uv, smooth_it);
+		const vec4 c = Texel(mat.normal_texture, uv, smooth_it, across);
 		const vec2 d1 = tri.uv1 - tri.uv0, d2 = tri.uv2 - tri.uv0;
 		const float det = d1.x * d2.y - d2.x * d1.y;
 		vec3 tu, tv;
@@ -1218,7 +1258,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	{
 		// a matte colour and a colour it shines in, each painted: see
 		// pt_material_t's specular_texture
-		s.f0 = ToLinear(Texel(int(mat.specular_map) - 1, uv, smooth_it).rgb);
+		s.f0 = ToLinear(Texel(int(mat.specular_map) - 1, uv, smooth_it, across).rgb);
 		s.kd = min(s.colour, vec3(1.0) - s.f0);
 		s.metallic = 0.0;
 	}
@@ -2232,7 +2272,8 @@ bool PathMeet(inout Path p, out Surface s, out bool shiny)
 		return false;
 	}
 
-	MakeSurface(hit, base, p.origin, p.dir, false, s);
+	// (light that has bounced comes from all over: what it meets counts for its colour over a wide patch)
+	MakeSurface(hit, base, p.origin, p.dir, false, hit.t * BOUNCE_SPREAD, s);
 
 	if ((s.mat.bits & BIT_EMISSIVE) != 0u && s.front && (p.count_emitters || (s.mat.bits & BIT_SAMPLED) == 0u))
 		p.radiance += p.throughput * Emitted(s, false);

@@ -112,6 +112,9 @@ void main()
 		eye_dir = EyeDir(forward, right, cross(right, forward), at);
 	}
 
+	// how far apart the views of two pixels side by side are, for each unit they have gone
+	const float pixel_spread = length(EyeDir(fr.forward.xyz, fr.right.xyz, fr.up.xyz, at + vec2(1.0, 0.0)) - frame_dir);
+
 	// What the eye carries, the weapon in hand, turns with it: it is seen
 	// along the unblurred ray, from the eye at the end of the frame, and the
 	// blurred ray passes through where it is.
@@ -212,7 +215,7 @@ void main()
 			sky_depth = travelled + hit.t;
 			break;
 		}
-		MakeSurface(hit, base, origin, dir, fr.settings2.y != 0, surf);
+		MakeSurface(hit, base, origin, dir, fr.settings2.y != 0, (travelled + hit.t) * pixel_spread, surf);
 		if (view_mode == 0)
 			AddFroth(surf);
 		// A liquid scatters a little of the light in it towards the eye: it
