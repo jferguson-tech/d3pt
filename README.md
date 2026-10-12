@@ -55,7 +55,8 @@ All are console variables as well; most are saved.
 |---|---|
 | `r_pathTrace` | 1 draws 3D views with the path tracer |
 | `r_ptScale` | resolution traced at, as a fraction of the view (1); lower is faster and softer |
-| `r_ptAntialias` | 1 smooths edges by blending frames over time, and softens the whole picture with them (0) |
+| `r_ptAntialias` | 1 smooths edges by blending frames over time, which also softens the whole picture a little (1) |
+| `r_ptSharpen` | how much the finished picture is sharpened, 0 to 1; gives back what smoothing edges takes from fine detail (0.5) |
 | `r_ptSamples`, `r_ptBounces` | paths a pixel a frame (1), bounces (3) |
 | `r_ptLightScale` | how bright the game's lights are (1) |
 | `r_ptSpecular`, `r_ptGloss` | how bright and how wide a highlight is (1.5, 0.5) |

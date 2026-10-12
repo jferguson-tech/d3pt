@@ -17,9 +17,41 @@
 // what is around it now, so that nothing lingers where it no longer belongs.
 // The same averaging smooths edges when nothing is being enlarged.
 
+//
+// Run a second time it sharpens what it made: see Sharpen.
+
 layout(local_size_x = 8, local_size_y = 8) in;
 
 #include "scene.glsl"
+
+layout(push_constant) uniform Pass
+{
+	int sharpen;		// the second run
+	int amount;			// how much, in thousandths
+	int unused0, unused1;
+} pass;
+
+// the finished picture as the screen is given it
+vec3 Shown(ivec2 q)
+{
+	return pow(clamp(imageLoad(img_steady[fr.frame_has.z], clamp(q, ivec2(0), fr.out_size.xy - 1)).rgb, 0.0, 1.0), vec3(1.0 / 2.2));
+}
+
+// Each pixel is pushed away from the four beside it, more where they differ
+// little and there is room to: fine detail, which averaging over frames
+// softens, comes back, and an edge that is strong already is left nearly as
+// it is, so that no bright or dark line appears along it. (Contrast adaptive
+// sharpening, as AMD's FidelityFX has it.)
+void Sharpen(ivec2 pixel)
+{
+	const vec3 c = Shown(pixel);
+	const vec3 a = Shown(pixel + ivec2(0, -1)), b = Shown(pixel + ivec2(-1, 0));
+	const vec3 d = Shown(pixel + ivec2(1, 0)), e = Shown(pixel + ivec2(0, 1));
+	const vec3 lo = min(c, min(min(a, b), min(d, e))), hi = max(c, max(max(a, b), max(d, e)));
+	const vec3 room = sqrt(clamp(min(lo, 1.0 - hi) / max(hi, vec3(1.0e-4)), 0.0, 1.0));
+	const vec3 w = room * -mix(0.125, 0.2, float(pass.amount) * 0.001);
+	imageStore(img_picture, pixel, vec4(clamp((c + (a + b + d + e) * w) / (1.0 + 4.0 * w), 0.0, 1.0), 1.0));
+}
 
 vec3 Graded(ivec2 q)
 {
@@ -41,6 +73,11 @@ void main()
 	const ivec2 out_size = fr.out_size.xy;
 	if (pixel.x >= out_size.x || pixel.y >= out_size.y)
 		return;
+	if (pass.sharpen != 0)
+	{
+		Sharpen(pixel);
+		return;
+	}
 	const ivec2 size = fr.size.xy;
 	const int now = fr.frame_has.z, prev = 1 - now;
 	const vec2 grow = vec2(out_size) / vec2(size);
