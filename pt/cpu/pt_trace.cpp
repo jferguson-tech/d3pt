@@ -885,7 +885,7 @@ Vec3 Emitted(const Surface &s, bool seen)
 	if (m.emission_map)
 	{
 		if (!(m.flags & PT_MAT_EMIT_MAPPED))
-			return m.emission * s.glow;
+			return (seen && m.emission_seen > 0.0f) ? s.glow * m.emission_seen : m.emission * s.glow;
 		// the material's own light, from where the map says it comes
 		return (seen && m.emission_seen > 0.0f) ? s.glow * m.emission_seen : m.emission_per_texel * s.glow;
 	}
