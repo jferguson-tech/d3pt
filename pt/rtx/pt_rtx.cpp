@@ -352,6 +352,7 @@ struct RtxBackend
 	std::vector<Texture>	textures;			// kMaxTextures slots; the shaders see them all
 	std::vector<int>		world_textures;		// slots the map's textures were given
 	VkSampler				tex_sampler = VK_NULL_HANDLE, smooth_sampler = VK_NULL_HANDLE;
+	bool					anisotropy = false;		// the card has it
 	Texture					blank;				// stands in every slot that holds nothing
 	Geometry				world, frame;
 	bool					world_loaded = false;
@@ -667,6 +668,11 @@ void CreateDevice(RtxBackend *s)
 	feat.f2.features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
 	feat.v12.runtimeDescriptorArray = VK_TRUE;
 	feat.v12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+	// (not needed: without it a surface seen from the side is blurred along its length)
+	VkPhysicalDeviceFeatures has{};
+	vkGetPhysicalDeviceFeatures(s->gpu, &has);
+	s->anisotropy = has.samplerAnisotropy == VK_TRUE;
+	feat.f2.features.samplerAnisotropy = has.samplerAnisotropy;
 
 	VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
 	dci.pNext = &feat.f2;
@@ -1091,7 +1097,7 @@ void CreatePipeline(RtxBackend *s, VkFormat color_format)
 
 void Barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to,
 	VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-	VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access)
+	VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, uint32_t levels = 1)
 {
 	VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
 	b.srcStageMask = src_stage;
@@ -1103,7 +1109,7 @@ void Barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayo
 	b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	b.image = image;
-	b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+	b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
 
 	VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
 	di.imageMemoryBarrierCount = 1;
@@ -1266,7 +1272,10 @@ void FreeTexture(RtxBackend *s, Texture &t)
 	t = Texture();
 }
 
-// width * height pixels of R,G,B,A bytes, onto the card
+// width * height pixels of R,G,B,A bytes, onto the card, and under them the
+// same picture at half the size and half that, down to one pixel, each pixel
+// the mean of the four above it: what a surface far off or seen from the
+// side is read from, where one pixel of the view covers many of the picture
 Texture MakeTexture(RtxBackend *s, int width, int height, const uint32_t *pixels)
 {
 	Texture t;
@@ -1275,14 +1284,39 @@ Texture MakeTexture(RtxBackend *s, int width, int height, const uint32_t *pixels
 	{
 		t.width = width;
 		t.height = height;
-		const VkDeviceSize bytes = (VkDeviceSize)width * height * 4;
+		std::vector<std::vector<uint32_t>> smaller;
+		std::vector<VkExtent3D> sizes{{(uint32_t)width, (uint32_t)height, 1}};
+		VkDeviceSize bytes = (VkDeviceSize)width * height * 4;
+		for (int w = width, h = height; w > 1 || h > 1;)
+		{
+			const uint32_t *from = smaller.empty() ? pixels : smaller.back().data();
+			const int nw = std::max(1, w / 2), nh = std::max(1, h / 2);
+			std::vector<uint32_t> level((size_t)nw * nh);
+			for (int y = 0; y < nh; y++)
+				for (int x = 0; x < nw; x++)
+				{
+					const int x0 = std::min(x * 2, w - 1), x1 = std::min(x * 2 + 1, w - 1);
+					const int y0 = std::min(y * 2, h - 1), y1 = std::min(y * 2 + 1, h - 1);
+					const uint32_t four[4] = {from[y0 * w + x0], from[y0 * w + x1], from[y1 * w + x0], from[y1 * w + x1]};
+					uint32_t mean = 0;
+					for (int c = 0; c < 32; c += 8)
+						mean |= ((((four[0] >> c) & 255) + ((four[1] >> c) & 255) + ((four[2] >> c) & 255) + ((four[3] >> c) & 255) + 2) >> 2) << c;
+					level[(size_t)y * nw + x] = mean;
+				}
+			smaller.push_back(std::move(level));
+			sizes.push_back({(uint32_t)nw, (uint32_t)nh, 1});
+			bytes += (VkDeviceSize)nw * nh * 4;
+			w = nw;
+			h = nh;
+		}
+		const uint32_t levels = (uint32_t)sizes.size();
 
 		VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
 		ici.imageType = VK_IMAGE_TYPE_2D;
 		// as stored: the shaders undo the display encoding where it is colour
 		ici.format = VK_FORMAT_R8G8B8A8_UNORM;
 		ici.extent = {(uint32_t)width, (uint32_t)height, 1};
-		ici.mipLevels = 1;
+		ici.mipLevels = levels;
 		ici.arrayLayers = 1;
 		ici.samples = VK_SAMPLE_COUNT_1_BIT;
 		ici.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1302,11 +1336,21 @@ Texture MakeTexture(RtxBackend *s, int width, int height, const uint32_t *pixels
 		vci.image = t.image;
 		vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
 		vci.format = VK_FORMAT_R8G8B8A8_UNORM;
-		vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+		vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
 		Check(vkCreateImageView(s->device, &vci, nullptr, &t.view), "vkCreateImageView");
 
 		staging = MakeBuffer(s, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-		memcpy(staging.ptr, pixels, (size_t)bytes);
+		std::vector<VkBufferImageCopy> regions(levels);
+		VkDeviceSize at = 0;
+		for (uint32_t l = 0; l < levels; l++)
+		{
+			const size_t size = (size_t)sizes[l].width * sizes[l].height * 4;
+			memcpy(static_cast<uint8_t *>(staging.ptr) + at, l ? smaller[l - 1].data() : pixels, size);
+			regions[l].bufferOffset = at;
+			regions[l].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1};
+			regions[l].imageExtent = sizes[l];
+			at += size;
+		}
 
 		double sum[3] = {0, 0, 0};
 		for (int i = 0; i < width * height; i++)
@@ -1318,14 +1362,11 @@ Texture MakeTexture(RtxBackend *s, int width, int height, const uint32_t *pixels
 		VkCommandBuffer cmd = BeginOnce(s);
 		Barrier(cmd, t.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-			VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-		VkBufferImageCopy region{};
-		region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-		region.imageExtent = {(uint32_t)width, (uint32_t)height, 1};
-		vkCmdCopyBufferToImage(cmd, staging.buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+			VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, levels);
+		vkCmdCopyBufferToImage(cmd, staging.buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, levels, regions.data());
 		Barrier(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-			VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+			VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, levels);
 		EndOnce(s);
 		FreeBuffer(s, staging);
 	}
@@ -1809,10 +1850,21 @@ void CreateScene(RtxBackend *s)
 	sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	Check(vkCreateSampler(s->device, &sci, nullptr, &s->tex_sampler), "vkCreateSampler");
 
+	// between texels, between the sizes a picture is kept at, and along the
+	// way a surface seen from the side runs: as the game's own renderer reads
+	// its pictures
 	sci.magFilter = VK_FILTER_LINEAR;
 	sci.minFilter = VK_FILTER_LINEAR;
+	sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	sci.maxLod = VK_LOD_CLAMP_NONE;
+	sci.anisotropyEnable = s->anisotropy ? VK_TRUE : VK_FALSE;
+	sci.maxAnisotropy = s->anisotropy ? 8.0f : 1.0f;
 	Check(vkCreateSampler(s->device, &sci, nullptr, &s->smooth_sampler), "vkCreateSampler");
 
+	sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+	sci.maxLod = 0.0f;
+	sci.anisotropyEnable = VK_FALSE;
+	sci.maxAnisotropy = 1.0f;
 	sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 	Check(vkCreateSampler(s->device, &sci, nullptr, &s->trace_sampler), "vkCreateSampler");
 
