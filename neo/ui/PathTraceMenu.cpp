@@ -88,7 +88,7 @@ static const int ptMenuNumRows = sizeof( ptMenuRows ) / sizeof( ptMenuRows[0] );
 // What Reset to Defaults puts back besides the rows: the rest of the path
 // tracer's settings. Whether it is on is left as it is.
 static const char *ptMenuAlsoReset[] = {
-	"r_ptFireflyClamp", "r_ptGlow", "r_ptShadowFaces", "r_ptMaterials", "r_ptFilter", "r_ptHistory",
+	"r_ptFireflyClamp", "r_ptGlow", "r_ptShadowFaces", "r_ptMaterials", "r_ptFilter", "r_ptHistory", "r_ptReact",
 	"r_ptTonemap", "r_ptContrast", "r_ptSaturation", "r_ptGlassTint", "r_ptEntities", "r_ptView",
 };
 
