@@ -89,6 +89,8 @@ const float LIGHT_SAMPLED_ROUGHNESS = 0.25;	// below this a highlight is found b
 const float MIN_ALPHA = 0.002;				// GGX gets numerically touchy below this
 const float GLOBAL_LIGHT_CHANCE = 0.2;		// how often a light is picked map wide instead of nearby
 const int PER_CELL = 24;					// lights listed per cell of the grid
+const int GRID_PROBES = 8;					// slots a cell of the grid is looked for in
+const float UNKNOWN_SKY_CHANCE = 0.25;		// how often the sky is looked for from where no cell is kept
 const float MIN_DEMODULATE = 0.02;
 const float WATER_INDEX = 1.33;
 const float CAUSTIC_MAX = 4.0;				// the most that waves may brighten light by
@@ -1509,10 +1511,26 @@ vec3 Leave(Surface s)
 
 // ----------------------------------------------------------------- lights
 
+// The slot of the light grid's cell that p is in, or -1 if no such cell is
+// kept: see LightGrid in pt_world.h, which this follows step for step. A
+// slot's count has the cell kept there above its low five bits.
 int GridCell(vec3 p)
 {
-	const ivec3 c = clamp(ivec3((p - fr.grid_origin.xyz) * fr.grid_origin.w), ivec3(0), fr.grid_dims.xyz - 1);
-	return (c.z * fr.grid_dims.y + c.y) * fr.grid_dims.x + c.x;
+	const ivec3 c = clamp(ivec3(floor((p - fr.grid_origin.xyz) * fr.grid_origin.w)), ivec3(0), fr.grid_dims.xyz - 1);
+	const uint key = uint((c.z * fr.grid_dims.y + c.y) * fr.grid_dims.x + c.x);
+	const uint mask = uint(fr.grid_dims.w) - 1u;
+	uint h = key * 2654435761u;
+	h = (h ^ (h >> 15)) & mask;
+	for (int i = 0; i < GRID_PROBES; i++)
+	{
+		const uint entry = indices.v[fr.table_at2.w + int(h)];
+		if (entry == ~0u)
+			break;
+		if ((entry >> 5) == key)
+			return int(h);
+		h = (h + 1u) & mask;
+	}
+	return -1;
 }
 
 // Light thrown back up by a simulated liquid surface, onto walls and
@@ -1589,8 +1607,8 @@ Lit DirectLights(Surface s, bool first_hit)
 	bool chosen_free = false;		// it casts no shadows
 
 	const bool has_grid = fr.grid_dims.w != 0;
-	const int cell = has_grid ? GridCell(s.p) : 0;
-	const int in_cell = has_grid ? int(indices.v[fr.table_at2.w + cell]) : 0;
+	const int cell = has_grid ? GridCell(s.p) : -1;
+	const int in_cell = cell >= 0 ? int(indices.v[fr.table_at2.w + cell] & 31u) : 0;
 	const float use_global = in_cell > 0 ? GLOBAL_LIGHT_CHANCE : 1.0;
 	const int cell_lights = fr.table_at2.z + cell * PER_CELL;
 	const int cell_pdfs = fr.table_at.y + cell * PER_CELL;
@@ -1772,7 +1790,10 @@ Lit DirectSky(Surface s)
 
 	float chance = 1.0;
 	if (fr.grid_dims.w != 0)
-		chance = tables.v[fr.table_at.w + GridCell(s.p)];
+	{
+		const int cell = GridCell(s.p);
+		chance = cell >= 0 ? tables.v[fr.table_at.w + cell] : UNKNOWN_SKY_CHANCE;
+	}
 	if (chance <= 0.0 || Rand() >= chance)
 		return none;
 

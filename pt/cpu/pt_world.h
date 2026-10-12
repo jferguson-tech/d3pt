@@ -7,6 +7,8 @@
 #include "../include/pt.h"
 #include "pt_bvh.h"
 
+#include <cmath>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -146,27 +148,64 @@ struct Light
 // For each cell of a coarse grid, the lights that matter most there. Sampling
 // from the cell a point is in finds nearby lights far more often than picking
 // by power over the whole map.
+// For each part of the map, the lights worth looking for from there. The
+// map's box is cut into cells, and only the cells that have something in
+// them are kept, each in a slot: a cell is found by its number in the box
+// (its key) through the slots, of which there are a power of two, starting
+// from the one its key hashes to and going on from there.
 struct LightGrid
 {
 	static const int kPerCell = 24;
+	static const int kProbes = 8;			// the most slots a cell is looked for in
+	static const uint32_t kNone = ~0u;		// the key of a slot with no cell in it
 
 	Vec3		origin;
 	float		inv_cell = 0.0f;
-	int			dims[3] = {0, 0, 0};
-	std::vector<uint32_t>	light;	// kPerCell per cell
+	int			dims[3] = {0, 0, 0};	// of the box, in cells: under 2^27 of them
+	std::vector<uint32_t>	key;	// per slot
+	std::vector<uint32_t>	light;	// kPerCell per slot
 	std::vector<float>		pdf;	// chance within the cell
 	std::vector<float>		cdf;
-	std::vector<uint8_t>	count;
+	std::vector<uint8_t>	count;	// per slot
 
-	size_t Cell(Vec3 p) const
+	static uint32_t Hash(uint32_t k)
 	{
-		size_t c[3];
+		k *= 2654435761u;
+		return k ^ (k >> 15);
+	}
+
+	// the cell p is in; one outside the box is in the nearest of the box's
+	uint32_t Key(Vec3 p) const
+	{
+		uint32_t c[3];
 		for (int a = 0; a < 3; a++)
 		{
-			int i = (int)((p[a] - origin[a]) * inv_cell);
-			c[a] = (size_t)(i < 0 ? 0 : (i >= dims[a] ? dims[a] - 1 : i));
+			const float f = std::floor((p[a] - origin[a]) * inv_cell);
+			c[a] = (uint32_t)(f < 0.0f ? 0 : (f >= (float)dims[a] ? dims[a] - 1 : (int)f));
 		}
-		return (c[2] * dims[1] + c[1]) * dims[0] + c[0];
+		return (c[2] * (uint32_t)dims[1] + c[1]) * (uint32_t)dims[0] + c[0];
+	}
+
+	// the slot a cell is kept in, or -1 if it is not kept
+	int Slot(uint32_t k) const
+	{
+		if (key.empty())
+			return -1;
+		const uint32_t mask = (uint32_t)key.size() - 1;
+		uint32_t h = Hash(k) & mask;
+		for (int i = 0; i < kProbes; i++, h = (h + 1) & mask)
+		{
+			if (key[h] == k)
+				return (int)h;
+			if (key[h] == kNone)
+				break;
+		}
+		return -1;
+	}
+
+	int Cell(Vec3 p) const
+	{
+		return Slot(Key(p));
 	}
 };
 
