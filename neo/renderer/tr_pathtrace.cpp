@@ -57,16 +57,20 @@ file is what stands between the two:
   its bumps and the colour it shines in, and the tracer is given the same
   three. See PT_ReadMaterial.
 
-  glass: of all that the game draws see-through, glass alone is traced: a
-  clear pane with a faint tint, which reflects, and bends what is seen
-  through it. See PT_IsGlass.
+  glass: of what the game draws see-through, glass is traced: a clear pane
+  with a faint tint, which reflects, and bends what is seen through it. See
+  PT_IsGlass.
+
+  pictures that are lit: a badge on a helmet, a label on a drum. The game
+  lights them as it does the surface they lie on and adds the two, and the
+  tracer does the same. See PT_IsLitDecal.
 
   what OpenGL still draws: the screens of the game's computers, particles,
-  decals, flares and everything else see-through but glass are not light
-  falling on surfaces, they are pictures the game lays over the scene, each
-  blended in a way of its own. They are drawn by OpenGL as they always
-  were, over the traced picture, hidden where the scene hides them. They do
-  not show in what the tracer reflects and they light nothing. See
+  flares, the decals that are not lit and everything else see-through are
+  not light falling on surfaces, they are pictures the game lays over the
+  scene, each blended in a way of its own. They are drawn by OpenGL as they
+  always were, over the traced picture, hidden where the scene hides them.
+  They do not show in what the tracer reflects and they light nothing. See
   PT_DrawOverlay.
 
 What is not there yet: other translucent surfaces, particles, surfaces the game
@@ -358,6 +362,30 @@ static bool PT_IsGlass( const idMaterial *shader ) {
 
 /*
 ================
+PT_IsLitDecal
+
+A see-through material with a picture the game's lights fall on: a badge, a
+label, a sticker, hair. The game draws it once for each light, lit as the
+surface under it is, and adds that to what is there. OpenGL's part of a
+traced view has no lights, and left to it these did not show at all.
+================
+*/
+static bool PT_IsLitDecal( const idMaterial *shader ) {
+	if ( shader->Coverage() != MC_TRANSLUCENT || shader->Deform() != DFRM_NONE || PT_IsGlass( shader ) ) {
+		return false;
+	}
+	for ( int i = 0; i < shader->GetNumStages(); i++ ) {
+		const shaderStage_t *stage = shader->GetStage( i );
+		if ( stage->lighting == SL_DIFFUSE && stage->texture.image && !stage->texture.cinematic
+				&& stage->texture.dynamic == DI_STATIC && stage->texture.texgen == TG_EXPLICIT ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+================
 PT_IsTraced
 ================
 */
@@ -365,7 +393,7 @@ static bool PT_IsTraced( const idMaterial *shader ) {
 	if ( !shader || !shader->IsDrawn() ) {
 		return false;
 	}
-	return shader->Coverage() != MC_TRANSLUCENT || PT_IsGlass( shader );
+	return shader->Coverage() != MC_TRANSLUCENT || PT_IsGlass( shader ) || PT_IsLitDecal( shader );
 }
 
 /*
@@ -482,6 +510,7 @@ typedef struct {
 	bool	holes;			// base's alpha cuts it out
 	bool	glass;			// a clear pane: base is its tint
 	bool	filter;			// glass whose picture the game multiplies what is behind by
+	bool	decal;			// a picture laid on a surface and lit with it: base is added to that
 } ptRead_t;
 
 /*
@@ -572,6 +601,7 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 	read.glass = PT_IsGlass( shader );
 	read.filter = read.glass && shown && ( shown->drawStateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) == ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO );
 	read.screen = shader->HasGui();
+	read.decal = diffuse && PT_IsLitDecal( shader );
 	read.glows = !diffuse && unlit && !read.glass;
 	read.holes = shown && shown->hasAlphaTest && !read.glass;
 	if ( !pictures ) {
@@ -580,7 +610,7 @@ static void PT_ReadMaterial( const idMaterial *shader, ptRead_t &read, bool pict
 	if ( shown ) {
 		read.base = PT_ReadImage( shown->texture.image, read.baseWidth, read.baseHeight );
 	}
-	if ( ( !diffuse && !read.glass ) || !r_ptMaterials.GetBool() ) {
+	if ( ( !diffuse && !read.glass ) || read.decal || !r_ptMaterials.GetBool() ) {
 		return;
 	}
 
@@ -656,6 +686,10 @@ static void PT_FillMaterial( pt_material_t &material, const ptRead_t &read, int 
 		}
 		material.roughness = 0.05f;
 		material.flags |= PT_MAT_REFRACT;
+	}
+	if ( read.decal ) {
+		material.alpha = 0.0f;
+		material.flags |= PT_MAT_DECAL | PT_MAT_NO_SHADOW;
 	}
 	if ( read.holes ) {
 		material.flags |= PT_MAT_ALPHA_TEST;

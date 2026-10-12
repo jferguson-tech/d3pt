@@ -97,6 +97,12 @@ vertices appear counter clockwise.
 									   colour of the glass, which what is seen through
 									   it is multiplied by, texel by texel. It covers
 									   nothing and is not lit. RTX backend only */
+#define PT_MAT_DECAL				131072u	/* a picture laid on a surface (alpha 0): the eye
+									   looks through it, and its colour is added to
+									   that of the solid surface it then meets, which
+									   is lit as one with it. Nothing else meets it:
+									   it casts no shadow and no light bounces off
+									   it. Black in it adds nothing. RTX backend only */
 #define PT_MAT_EMIT_MAPPED		4096u	/* emission_texture says where on the surface the
 									   material's light comes from, and stands for
 									   texture in all that is said of emission: a
