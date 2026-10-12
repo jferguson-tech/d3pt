@@ -167,6 +167,7 @@ void main()
 	// filters as light does and came out smeared, and was followed from frame
 	// to frame as if nothing in it moved, which left a trail behind all that
 	// did. Two mirrors in a row are looked through; a third is a surface.
+	vec3 decals = vec3(0.0);	// the colour of the pictures laid on the surface that is met
 	bool eye_ray = true;		// not turned by a mirror yet: it sees what only the eye sees
 	uint ray_mask = held_apart ? MASK_SCENE : MASK_ALL;
 	int mirrors = 0;
@@ -243,6 +244,16 @@ void main()
 			// in a mirror the player's own body shows, and what the eye carries does not
 			eye_ray = false;
 			ray_mask = MASK_SCENE;
+			continue;
+		}
+		// A picture laid on a surface, a badge or a label, which the game
+		// lights with it and adds to it: it is looked through, and its colour
+		// goes to what is behind.
+		if ((surf.mat.flags & MAT_DECAL) != 0u && layer < MAX_LAYERS)
+		{
+			if (view_mode == VIEW_NORMAL)
+				decals += surf.kd;
+			tmin = hit.t + 0.01;
 			continue;
 		}
 		if (view_mode >= VIEW_LIGHTING)
@@ -463,6 +474,7 @@ void main()
 		return;
 	}
 
+	surf.kd = min(surf.kd + decals, vec3(1.0));
 	if (view_mode == 0 && F_WATERS > 0)
 		AddWater(surf, MaxComponent(absorb) > 0.0);
 	vec3 kd = surf.kd * through * tint;

@@ -54,6 +54,7 @@ const uint MAT_NO_SHADOW = 8192u;
 const uint MAT_REFRACT = 16384u;
 const uint MAT_MIRROR = 32768u;
 const uint MAT_FILTER = 65536u;
+const uint MAT_DECAL = 131072u;
 const uint MAT_WARP = 128u;
 const uint MAT_METAL_TEXTURE = 512u;
 const uint MAT_METAL_PAINTED = 1024u;
