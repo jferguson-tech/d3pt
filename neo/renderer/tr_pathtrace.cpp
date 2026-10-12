@@ -107,7 +107,8 @@ idCVar r_ptMaterials( "r_ptMaterials", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARC
 idCVar r_ptSpecular( "r_ptSpecular", "1.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much of the light a surface reflects, for a white texel of its specular map; needs reloadPathTrace" );
 idCVar r_ptGloss( "r_ptGloss", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how rough a surface with a specular map is, 0.05 a mirror to 1; it sets how wide a highlight is; needs reloadPathTrace" );
 idCVar r_ptSky( "r_ptSky", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how bright the sky is, for a white texel of its pictures; it lights what it shines on; needs reloadPathTrace" );
-idCVar r_ptAntialias( "r_ptAntialias", "0", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: blend frames over time to smooth edges; it also softens the whole picture" );
+idCVar r_ptAntialias( "r_ptAntialias", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: blend frames over time to smooth edges; it also softens the whole picture a little, which r_ptSharpen gives back" );
+idCVar r_ptSharpen( "r_ptSharpen", "0.5", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "path tracer: how much the finished picture is sharpened, 0 not at all to 1" );
 idCVar r_ptFilter( "r_ptFilter", "2", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: what is done about noise: 2 frames are blended over time and the picture filtered, 1 neither but frames add up at rest, 0 neither" );
 idCVar r_ptHistory( "r_ptHistory", "8", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "path tracer: frames of lighting kept while things change" );
 idCVar r_ptOverlay( "r_ptOverlay", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE, "path tracer: OpenGL draws over the traced view what the tracer leaves out: computer screens, particles, decals, flares" );
@@ -1843,6 +1844,7 @@ bool PT_DrawView( void ) {
 	view.denoise = r_ptDenoise.GetInteger();
 	view.history = r_ptHistory.GetInteger();
 	view.reflection_history = 1;
+	view.sharpen = r_ptSharpen.GetFloat();
 	view.saturation = r_ptSaturation.GetFloat();
 	view.contrast = r_ptContrast.GetFloat();
 	view.tonemap = r_ptTonemap.GetInteger();

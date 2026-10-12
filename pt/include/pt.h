@@ -468,6 +468,11 @@ typedef struct pt_view_s
 								   does not trail a light that moves, flashes or
 								   goes out: 0 = never, 1 = at once. Such places
 								   are noisier for a few frames. RTX only */
+	float	sharpen;			/* the finished picture is sharpened: 0 = not, 1 =
+								   as much as can be without rings around edges.
+								   Gives back what blending frames over time, and
+								   building the picture up from a smaller one,
+								   take from fine detail. RTX only */
 	float	bloom;				/* glow around what is brighter than white; 0 = none */
 	float	bloom_max;			/* the most over white that anything adds to the
 								   glow, in whites: up to half of this it adds

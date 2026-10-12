@@ -406,6 +406,7 @@ struct RtxBackend
 	VkPipeline				bloom_pipeline = VK_NULL_HANDLE, resolve_pipeline = VK_NULL_HANDLE;
 	VkPipeline				grade_pipeline = VK_NULL_HANDLE, change_pipeline = VK_NULL_HANDLE;
 	bool					bloom_on = false;
+	int						sharpen = 0;			// of the finished picture, in thousandths: see pt_view_t
 	float					camera[16] = {};		// the last view, to tell whether it has moved
 	FrameBlock				block{};				// what the shaders were last told
 	int						filter_passes = 0;
@@ -2928,6 +2929,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.frame_has[2] = s->parity;
 	f.frame_has[3] = (view->antialias && !view->debug && filtering == 2) ? 1 : 0;
 	s->bloom_on = view->bloom > 0.0f && !view->debug;
+	s->sharpen = view->debug ? 0 : (int)(std::min(std::max(view->sharpen, 0.0f), 1.0f) * 1000.0f);
 	f.size[0] = rw;
 	f.size[1] = rh;
 	f.out_size[0] = s->out_width;
@@ -3157,6 +3159,12 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	groups_y = ((uint32_t)s->out_height + 7) / 8;
 	mark(5, "resolve", true);
 	run(s->resolve_pipeline, 0, 0, 0);
+	// and sharpened, each pixel by those beside it, which that had to finish first
+	if (s->sharpen > 0)
+	{
+		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+		run(s->resolve_pipeline, 1, s->sharpen, 0);
+	}
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	mark(0, nullptr);
 	s->stamps_written = stamp;

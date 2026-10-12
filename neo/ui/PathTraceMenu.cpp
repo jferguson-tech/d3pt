@@ -69,6 +69,7 @@ static const ptMenuRow_t ptMenuRows[] = {
 	{ "Quality",				"r_ptPreset",		"Custom;Low;Medium;High;Ultra" },
 	{ "Render Scale",			"r_ptScale",		NULL,	0.25f,	1.0f,	0.05f },
 	{ "Smooth Edges",			"r_ptAntialias",	"Off;On" },
+	{ "Sharpen",				"r_ptSharpen",		NULL,	0.0f,	1.0f,	0.05f },
 	{ "Paths per Pixel",		"r_ptSamples",		NULL,	1.0f,	8.0f,	1.0f },
 	{ "Bounces",				"r_ptBounces",		NULL,	1.0f,	8.0f,	1.0f },
 	{ "Lights Weighed",			"r_ptLightSamples",	NULL,	1.0f,	32.0f,	1.0f },
@@ -124,7 +125,7 @@ static void PT_MenuPanel( idStr &s, bool visible, bool closeButton ) {
 	for ( int i = 0; i < ptMenuNumRows; i++ ) {
 		const ptMenuRow_t &row = ptMenuRows[i];
 
-		s += va( "	windowDef PT%d {\n		rect 20, %d, 350, 16\n", i, 30 + i * 18 );
+		s += va( "	windowDef PT%d {\n		rect 20, %d, 350, 16\n", i, 29 + i * 17 );
 		s += va( "		windowDef PT%dL { rect 0, 0, 8, 16\n background \"gui/mainmenu/select_edge\"\n matcolor 0, 0, 0, 1\n noevents 1\n }\n", i );
 		s += va( "		windowDef PT%dM { rect 8, 0, 334, 16\n background \"gui/mainmenu/select_border\"\n matcolor 0, 0, 0, 1\n noevents 1\n }\n", i );
 		s += va( "		windowDef PT%dR { rect 342, 0, 8, 16\n background \"gui/mainmenu/select_angle\"\n matcolor 0, 0, 0, 1\n noevents 1\n }\n", i );
@@ -143,7 +144,7 @@ static void PT_MenuPanel( idStr &s, bool visible, bool closeButton ) {
 	}
 
 	s += "	windowDef PTNote {\n"
-		"		rect 20, 335, 350, 14\n"
+		"		rect 20, 337, 350, 14\n"
 		"		text \"Changes are kept. Quality sets the four rows under it.\"\n"
 		"		font \"fonts/bank\"\n"
 		"		textscale 0.2\n"
