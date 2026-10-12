@@ -463,6 +463,12 @@ typedef struct pt_view_s
 								   surface to be followed by, so its light
 								   trails what moves; fewer frames trail less
 								   and are noisier. Below 1 = as history */
+	int		light_reuse;		/* the light picked for a pixel is weighed against
+								   those picked for it last frame and for pixels
+								   near it then, and the best of them is kept:
+								   each pixel has the pick of hundreds of lights
+								   for the price of a few, and its direct light
+								   has far less noise. Needs filter 2. RTX only */
 	float	react;				/* how readily what was gathered is let go where
 								   the light is found to have changed, so that it
 								   does not trail a light that moves, flashes or

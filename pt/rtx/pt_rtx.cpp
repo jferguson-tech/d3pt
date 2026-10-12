@@ -181,7 +181,7 @@ const uint32_t kBitEmissive = 1, kBitSampled = 2, kBitSwell = 4;	// GpuMaterial:
 const uint32_t kNumInstances = 5;
 const uint32_t kMaskScene = 1, kMaskHeld = 2;
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 39;
+const uint32_t kNumBindings = 40;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -205,7 +205,8 @@ enum
 	kFlash = 37,	// 2
 	kChange = 39,	// 4
 	kExport = 43,	// 4
-	kNumTargets = 47
+	kReservoir = 47,	// 4: two for each of this frame and the last
+	kNumTargets = 51
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -1713,7 +1714,9 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		const bool blocks = i >= kChange && i < kChange + 4;
 		// the export planes carry indices, which must come back whole
 		const bool exported = i >= kExport && i < kExport + 4;
-		const VkFormat format = (positions || gathered || blocks || exported) ? VK_FORMAT_R32G32B32A32_SFLOAT
+		// and so must the lights picked, with where on each
+		const bool picked = i >= kReservoir && i < kReservoir + 4;
+		const VkFormat format = (positions || gathered || blocks || exported || picked) ? VK_FORMAT_R32G32B32A32_SFLOAT
 			: moments ? VK_FORMAT_R32G32_SFLOAT : flash ? VK_FORMAT_R32_SFLOAT
 			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
@@ -1761,7 +1764,7 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
 		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1},
 		{30, kMirror, 2}, {31, kOver, 1}, {32, kMoments, 6}, {33, kFlash, 2},
-		{34, kChange, 4}, {35, kExport, 4},
+		{34, kChange, 4}, {35, kExport, 4}, {39, kReservoir, 4},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1845,6 +1848,7 @@ void CreateScene(RtxBackend *s)
 	bind[34].descriptorCount = 4;
 	bind[35].descriptorCount = 4;
 	bind[36].descriptorType = bind[37].descriptorType = bind[38].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bind[39].descriptorCount = 4;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;
@@ -2932,6 +2936,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.size[1] = rh;
 	f.out_size[0] = s->out_width;
 	f.out_size[1] = s->out_height;
+	f.out_size[2] = (view->light_reuse && f.output_i[3] && filtering == 2 && !view->debug) ? 1 : 0;
 	f.size[2] = s->num_waters;
 	f.size[3] = view->planes ? 1 : 0;
 	memcpy(f.water_rect, s->water_rect, sizeof(f.water_rect));
